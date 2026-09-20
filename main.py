@@ -597,17 +597,38 @@ def load_data():
     DATA.setdefault("bot_on", True)
     DATA.setdefault("deleted_button_names", [])
     # سازمان ملل همیشه متعلق به ادمین دوم
-    un = DATA["countries"].get("UN")
-    if not isinstance(un, dict):
-        DATA["countries"]["UN"] = {
-            "owner": UN_OWNER_ID, "power": BASE_COUNTRY_POWER,
-            "hacked_until": None, "start_ts": time.time(),
+    # سازمان ملل + مالک ادمین دوم — همیشه همگام
+    DATA["countries"]["UN"] = {
+        "owner": UN_OWNER_ID,
+        "power": int((DATA.get("countries", {}).get("UN") or {}).get("power") or BASE_COUNTRY_POWER)
+            if isinstance(DATA.get("countries", {}).get("UN"), dict) else BASE_COUNTRY_POWER,
+        "hacked_until": (DATA.get("countries", {}).get("UN") or {}).get("hacked_until")
+            if isinstance(DATA.get("countries", {}).get("UN"), dict) else None,
+        "start_ts": (DATA.get("countries", {}).get("UN") or {}).get("start_ts")
+            if isinstance(DATA.get("countries", {}).get("UN"), dict) else time.time(),
+    }
+    # اگر کشور دیگری owner این ادمین بود، آزاد نشود؛ فقط کشور کاربر = UN
+    ou = DATA["users"].get(str(UN_OWNER_ID))
+    if ou is None:
+        DATA["users"][str(UN_OWNER_ID)] = {
+            "coins": START_COINS, "diamonds": 0, "oil": 0, "food": 0, "country": "UN",
+            "banned": False, "equipment": {}, "printer": 0, "nuke_def": False,
+            "hq": 0, "pc": 0, "comm": 0, "sat": 0,
+            "hackers": {}, "antihackers": {},
+            "workers_perm": 0, "workers_temp": [], "houses": {},
+            "satisfaction": 0, "hack_until": None, "country_start": time.time(),
+            "def_hp": {}, "warnings": 0, "blocked": False,
         }
     else:
-        DATA["countries"]["UN"]["owner"] = UN_OWNER_ID
-    ou = DATA["users"].get(str(UN_OWNER_ID))
-    if ou is not None:
+        # اگر کشور دیگری داشت که مالکش بود، آزاد کن
+        old_c = ou.get("country")
+        if old_c and old_c != "UN":
+            oc = DATA["countries"].get(old_c)
+            if isinstance(oc, dict) and int(oc.get("owner") or 0) == int(UN_OWNER_ID):
+                oc["owner"] = None
         ou["country"] = "UN"
+        if not ou.get("country_start"):
+            ou["country_start"] = time.time()
     # مهاجرت ساختار قدیمی countries[en]=uid → dict
     for en, val in list(DATA["countries"].items()):
         if not isinstance(val, dict):
@@ -646,6 +667,20 @@ def get_user(uid):
                      "workers_temp": [], "houses": {}, "satisfaction": 0,
                      "hack_until": None, "country_start": None, "def_hp": {}, "warnings": 0, "blocked": False}.items():
             u.setdefault(k, v)
+    # مالک سازمان ملل همیشه کشورش UN باشد
+    try:
+        if int(uid) == int(UN_OWNER_ID):
+            u["country"] = "UN"
+            c = DATA.setdefault("countries", {}).get("UN")
+            if not isinstance(c, dict):
+                DATA["countries"]["UN"] = {
+                    "owner": UN_OWNER_ID, "power": BASE_COUNTRY_POWER,
+                    "hacked_until": None, "start_ts": time.time(),
+                }
+            else:
+                c["owner"] = UN_OWNER_ID
+    except Exception:
+        pass
     return u
 
 # ───────────────────────────── ارتباط با API بله ─────────────────────────────
