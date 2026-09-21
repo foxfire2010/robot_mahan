@@ -20,20 +20,21 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-# ───────────────────────────── تنظیمات (از متغیر محیطی) ─────────────────────────────
-# در Railway / لوکال این‌ها را ست کنید — داخل گیت‌هاب نگذارید
+# ───────────────────────────── تنظیمات (فقط از متغیر محیطی Railway) ─────────────────────────────
+# داخل گیت‌هاب سکرت نگذارید — در Railway → Variables ست کنید
 TOKEN = (os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN") or "").strip()
 if not TOKEN:
-    raise SystemExit("BOT_TOKEN تنظیم نشده — در Railway Variables مقدار بدهید")
+    raise SystemExit("BOT_TOKEN تنظیم نشده — در Railway Variables مقدار دهید")
 
 _admin_raw = (os.environ.get("ADMIN_IDS") or "").strip()
-if _admin_raw:
-    ADMIN_IDS = {int(x.strip()) for x in _admin_raw.replace(";", ",").split(",") if x.strip().isdigit()}
-else:
-    ADMIN_IDS = set()
+if not _admin_raw:
+    raise SystemExit("ADMIN_IDS تنظیم نشده — مثال: 1050936429,1012886348")
+ADMIN_IDS = {int(x.strip()) for x in _admin_raw.replace(";", ",").split(",") if x.strip().isdigit()}
+if not ADMIN_IDS:
+    raise SystemExit("ADMIN_IDS نامعتبر است")
 
 _admin_main = (os.environ.get("ADMIN_ID") or "").strip()
-ADMIN_ID = int(_admin_main) if _admin_main.isdigit() else (next(iter(ADMIN_IDS)) if ADMIN_IDS else 0)
+ADMIN_ID = int(_admin_main) if _admin_main.isdigit() else next(iter(ADMIN_IDS))
 
 _un = (os.environ.get("UN_OWNER_ID") or "").strip()
 UN_OWNER_ID = int(_un) if _un.isdigit() else ADMIN_ID
@@ -47,10 +48,15 @@ HACK_DURATION_SEC  = 3600  # ۱ ساعت قفل هک
 OIL_PER_FIELD     = 300
 OIL_COST_PER_UNIT = 100  # نفت لازم برای هر واحد تجهیز تهاجمی در حمله
 CHANNEL_USERNAME  = os.environ.get("CHANNEL_USERNAME", "@radaregang")
+# جوین اجباری — ربات با همین توکن باید در هر ۳ کانال «ادمین» باشد
+# در غیر این صورت getChatMember = permission_denied و چک کار نمی‌کند
 FORCE_CHANNELS = [
-    {"user": "@radaregang", "btn": "کانال اصلی", "url": "https://ble.ir/radaregang"},
-    {"user": "@radargabeliat", "btn": "کانال قابلیت ها", "url": "https://ble.ir/radargabeliat"},
-    {"user": "@radare", "btn": "کانال اختراعات", "url": "https://ble.ir/radare"},
+    {"user": "@radaregang", "btn": "کانال اصلی", "url": "https://ble.ir/radaregang",
+     "id": (os.environ.get("CH_ID_MAIN") or "").strip() or None},
+    {"user": "@radargabeliat", "btn": "کانال قابلیت ها", "url": "https://ble.ir/radargabeliat",
+     "id": (os.environ.get("CH_ID_FEATURES") or "").strip() or None},
+    {"user": "@radare", "btn": "کانال اختراعات", "url": "https://ble.ir/radare",
+     "id": (os.environ.get("CH_ID_INVENT") or "").strip() or None},
 ]
 
 NOTIFY_PROFIT    = True
@@ -922,10 +928,13 @@ def attack_force_kb(u, force):
     """دکمه‌های تجهیزات جنگی کاربر + حمله اگر force غیرخالی"""
     rows = []
     items = user_war_equipment(u)
-    if not items:
+    atom_n = int((u.get("equipment") or {}).get("atom", 0) or 0)
+    if not items and atom_n <= 0:
         rows.append(["— نیروی جنگی ندارید —"])
     for eid, cnt, it in items:
         rows.append([attack_force_btn_label(eid)])
+    if atom_n > 0:
+        rows.append(["💣 اتم"])
     if force:
         rows.append(["حمله🚀"])
     rows.append(["🔙 بازگشت"])
@@ -952,9 +961,12 @@ def do_military_attack(atk_uid, target_en, force):
 
         total_units = 0
         atk_power = 0
+        atom_in_force = int(force.get("atom") or 0)
         for eid, cnt in list(force.items()):
             cnt = int(cnt or 0)
             if cnt <= 0:
+                continue
+            if eid == "atom":
                 continue
             info = war_eq_info(eid)
             if not info:
@@ -969,12 +981,13 @@ def do_military_attack(atk_uid, target_en, force):
             # قدرت هر واحد × تعداد ارسالی
             atk_power += int(info[2]["power"]) * cnt
 
-        if total_units <= 0 or atk_power <= 0:
+        if atom_in_force <= 0 and (total_units <= 0 or atk_power <= 0):
             return False, "*کاربر گرامی⚠️*\n\nابتدا نیرو انتخاب کنید!✔️"
 
-        oil_need = total_units * OIL_COST_PER_UNIT
+        # حمله فقط اتمی: نفت لازم نیست
+        oil_need = 0 if (atom_in_force > 0 and total_units <= 0) else total_units * OIL_COST_PER_UNIT
         oil_have = int(au.get("oil") or 0)
-        if oil_have < oil_need:
+        if oil_need > 0 and oil_have < oil_need:
             return False, (
                 f"*کاربر گرامی⚠️*\n\nجهت حمله با این تعداد نیرو باید {fad(oil_need)} بشکه نفت داشته باشید!✔️\n\n"
                 f"شما تنها {fad(oil_have)} بشکه نفت دارید! بشکه نفت شما برای حمله با این مقدار نیرو کافی نیست!📌"
@@ -985,6 +998,55 @@ def do_military_attack(atk_uid, target_en, force):
         atk_name = country_name_fa(au.get("country"))
         def_name = country_name_fa(target_en)
         had_def = total_def_power(du) > 0
+
+        # حمله اتمی: ۹۰٪ قدرت کشور — دفاع عادی بی‌اثر؛ فقط ضداتم
+        atom_used = int(force.get("atom") or 0)
+        if atom_used > 0:
+            have_atom = int((au.get("equipment") or {}).get("atom", 0) or 0)
+            if atom_used > have_atom:
+                return False, "*کاربر گرامی⚠️*\n\nاتم کافی ندارید!✔️"
+            power_now = int(c.get("power") or BASE_COUNTRY_POWER)
+            anti = int((du.get("equipment") or {}).get("anti_atom", 0) or 0)
+            au.setdefault("equipment", {})["atom"] = have_atom - atom_used
+            if au["equipment"]["atom"] <= 0:
+                au["equipment"].pop("atom", None)
+            if anti > 0:
+                du.setdefault("equipment", {})["anti_atom"] = anti - 1
+                if du["equipment"]["anti_atom"] <= 0:
+                    du["equipment"].pop("anti_atom", None)
+                    du["nuke_def"] = False
+                save_data()
+                try:
+                    send_message(int(def_uid),
+                        f"*کاربر گرامی⚠️*\n\nحمله اتمی کشور {atk_name} با ضداتم شما خنثی شد!✔️\n\nاتم و ضداتم مصرف شدند!📌")
+                except Exception:
+                    pass
+                post_attack_log(atk_name, def_name, 0, False)
+                return True, (
+                    f"*کاربر گرامی⚠️*\n\nحمله اتمی شما به {def_name} خنثی شد!✖️\n\n"
+                    f"طرف مقابل ضداتم داشت و اتم شما از بین رفت!📌"
+                )
+            damage = int(power_now * 0.9)
+            new_power = max(0, power_now - damage)
+            c["power"] = new_power
+            destroyed = new_power <= 0
+            if destroyed:
+                DATA.setdefault("destroyed", {})[target_en] = True
+                DATA["countries"].pop(target_en, None)
+                du["country"] = None
+                du["banned"] = True
+            save_data()
+            try:
+                send_message(int(def_uid),
+                    f"*کاربر گرامی⚠️*\n\nکشور شما هدف حمله اتمی {atk_name} قرار گرفت!✖️\n\n"
+                    f"{fad(damage)} از قدرت کشور کم شد!📌\nقدرت باقی‌مانده: {fad(new_power)} 🚀")
+            except Exception:
+                pass
+            post_attack_log(atk_name, def_name, damage, destroyed)
+            return True, (
+                f"*کاربر گرامی⚠️*\n\nحمله اتمی به {def_name} انجام شد!✔️\n\n"
+                f"۹۰٪ قدرت کشور دشمن نابود شد ({fad(damage)})!📌"
+            )
 
         if is_hacked(du):
             damage = atk_power
@@ -1104,6 +1166,24 @@ def do_military_attack(atk_uid, target_en, force):
 
 
 
+
+def daily_income_of(u):
+    """درآمد روزانه سکه و نفت کاربر (معادن + چاپ پول)"""
+    coins = 0
+    oil = 0
+    eq = u.get("equipment") or {}
+    for it in ECO_ITEMS:
+        n = int(eq.get(it["id"], 0) or 0)
+        if n <= 0:
+            continue
+        coins += int(it.get("profit") or 0) * n
+        if it["id"] == "eco6":
+            oil += OIL_PER_FIELD * n
+    lvl = int(u.get("printer") or 0)
+    if lvl in PRINTER_INCOME:
+        coins += PRINTER_INCOME[lvl]
+    return coins, oil
+
 def equipment_status_text(uid):
     """گزارش مرتب و فشرده موجودی کاربر"""
     u = get_user(uid)
@@ -1129,6 +1209,16 @@ def equipment_status_text(uid):
     lines.append(f"💎 الماس: {fad(int(u.get('diamonds') or 0))}")
     lines.append(f"🛢 نفت: {fad(int(u.get('oil') or 0))}")
     lines.append(f"🍞 غذا: {fad(int(u.get('food') or 0))}")
+
+    # اتم / ضداتم — بالای گزارش تا قطع نشود
+    atom_n = int((u.get("equipment") or {}).get("atom", 0) or 0)
+    anti_n = int((u.get("equipment") or {}).get("anti_atom", 0) or 0)
+    lines.append(f"💣 اتم: {fad(atom_n)}")
+    lines.append(f"🛡 ضداتم: {fad(anti_n)}")
+
+    d_coins, d_oil = daily_income_of(u)
+    lines.append(f"📈 سود روزانه سکه: {coins_fa(d_coins)}")
+    lines.append(f"📈 سود روزانه نفت: {fad(d_oil)} بشکه")
 
     pr = int(u.get("printer") or 0)
     if pr:
@@ -1166,8 +1256,9 @@ def equipment_status_text(uid):
     else:
         lines.append("• —")
 
-    if u.get("nuke_def"):
-        lines.append("• 🛡 پدافند ضد بمب اتم: فعال")
+    anti_n2 = int((u.get("equipment") or {}).get("anti_atom", 0) or 0)
+    if anti_n2 > 0 or u.get("nuke_def"):
+        lines.append(f"• 🛡 ضداتم: {fad(anti_n2)}")
 
     # جنگی
     war_lines = []
@@ -1175,6 +1266,9 @@ def equipment_status_text(uid):
         name = it.get("name") or eid
         war_lines.append(f"• {name}")
         war_lines.append(f"  تعداد: {fad(cnt)} | قدرت‌واحد: {fad(it.get('power') or 0)}")
+    atom_w = int((u.get("equipment") or {}).get("atom", 0) or 0)
+    if atom_w > 0:
+        war_lines.insert(0, f"• 💣 اتم: {fad(atom_w)}")
     lines.append("")
     lines.append("*⚔️ نیروهای جنگی*")
     if war_lines:
@@ -1209,6 +1303,7 @@ def equipment_status_text(uid):
             it = HACK_GROUP_MAP.get(gid) or {}
             lines.append(f"• {it.get('btn', gid)}: {fad(n)}")
 
+
     # ساخت و ساز
     houses = u.get("houses") or {}
     sat_v = int(u.get("satisfaction") or 0)
@@ -1220,7 +1315,6 @@ def equipment_status_text(uid):
         for hid, n in houses.items():
             if int(n or 0) <= 0:
                 continue
-            # find house name
             hname = hid
             for h in HOUSE_ITEMS:
                 if h["id"] == hid:
@@ -1230,11 +1324,11 @@ def equipment_status_text(uid):
     else:
         lines.append("• خانه: —")
 
+
     text = "\n".join(lines)
     if len(text) > 3900:
         text = text[:3890] + "\n…"
     return text
-
 
 
 def notify_admins(text, kb=None, md=True):
@@ -1310,33 +1404,62 @@ def deliver_support_to_admins(uid, chat_id, msg):
                 pass
 
 
-def check_channel_member(uid, channel):
-    """True اگر عضو یا ادمین کانال باشد"""
-    try:
-        res = api("getChatMember", chat_id=channel, user_id=uid)
-        if not res.get("ok"):
-            return False
-        st = (res.get("result") or {}).get("status") or ""
-        return st in ("creator", "administrator", "member", "restricted")
-    except Exception as e:
-        print("[JOIN CHECK]", channel, e)
-        return False
+
+def check_channel_member(uid, channel, chat_id_num=None):
+    """True اگر عضو باشد. نیاز: ربات ادمین کانال با دسترسی مشاهده اعضا."""
+    uid_i = int(uid)
+    variants = []
+    if chat_id_num:
+        variants.append(int(chat_id_num) if str(chat_id_num).lstrip("-").isdigit() else chat_id_num)
+    uname = str(channel or "").strip()
+    if uname:
+        variants.append(uname if uname.startswith("@") else "@" + uname)
+    seen = set()
+    for chat_id in variants:
+        key = str(chat_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            res = api("getChatMember", chat_id=chat_id, user_id=uid_i)
+            if not res:
+                continue
+            if res.get("ok"):
+                st = str((res.get("result") or {}).get("status") or "").lower()
+                return st in ("creator", "administrator", "member", "restricted")
+            code_err = res.get("error_code")
+            desc = str(res.get("description") or "")
+            # 403 = ربات ادمین نیست یا حق مشاهده اعضا ندارد
+            if code_err == 403 or "permission" in desc.lower() or "forbidden" in desc.lower():
+                print("[JOIN] permission_denied — ربات را در", chat_id, "ادمین کنید")
+                return False
+            if code_err == 404:
+                continue
+            if "not a member" in desc.lower() or "user_not_participant" in desc.lower():
+                return False
+        except Exception as e:
+            print("[JOIN CHECK ERR]", chat_id, e)
+    return False
+
+
 
 def missing_force_channels(uid):
     if is_admin(uid):
         return []
     miss = []
     for ch in FORCE_CHANNELS:
-        if not check_channel_member(uid, ch["user"]):
+        if not check_channel_member(uid, ch["user"], ch.get("id")):
             miss.append(ch)
     return miss
+
 
 def force_join_kb():
     rows = []
     for ch in FORCE_CHANNELS:
         rows.append([{"text": ch["btn"], "url": ch["url"]}])
-    rows.append([{"text": "✅️ عضو شدم", "callback_data": "fjok"}])
+    rows.append([{"text": "✅ عضو شدم", "callback_data": "fjok"}])
     return {"inline_keyboard": rows}
+
 
 FORCE_JOIN_TEXT = (
     "*کاربر گرامی⚠️*\n\n"
@@ -1344,18 +1467,63 @@ FORCE_JOIN_TEXT = (
     "ابتدا در کانال های زیر عضو شوید!📌"
 )
 
+
 def require_force_join(uid, chat_id):
     miss = missing_force_channels(uid)
     if not miss:
         return False
-    send_message(chat_id, FORCE_JOIN_TEXT, force_join_kb())
+    extra = "\n".join(f"• {ch['btn']} ({ch['user']})" for ch in miss)
+    text = FORCE_JOIN_TEXT + "\n\nکانال‌های باقی‌مانده:\n" + extra
+    send_message(chat_id, text, force_join_kb())
     return True
+
 
 def is_admin(uid):
     try:
         return int(uid) in ADMIN_IDS
     except Exception:
         return False
+
+
+def verify_force_channels_admin():
+    """موقع استارت: چک می‌کند ربات در کانال‌های جوین اجباری ادمین است یا نه"""
+    try:
+        me = api("getMe")
+        if not me.get("ok"):
+            print("[JOIN-SETUP] getMe failed:", me)
+            return
+        bot_id = me["result"]["id"]
+        print("[JOIN-SETUP] bot_id =", bot_id)
+    except Exception as e:
+        print("[JOIN-SETUP] getMe error:", e)
+        return
+    for ch in FORCE_CHANNELS:
+        uname = ch["user"]
+        cid = ch.get("id")
+        ok_admin = False
+        detail = None
+        for chat_id in ([cid] if cid else []) + [uname, uname.lstrip("@")]:
+            if not chat_id:
+                continue
+            try:
+                res = api("getChatMember", chat_id=chat_id, user_id=bot_id)
+                detail = res
+                if res.get("ok"):
+                    st = str((res.get("result") or {}).get("status") or "")
+                    print(f"[JOIN-SETUP] {uname} ({chat_id}) status={st}")
+                    if st.lower() in ("administrator", "creator"):
+                        ok_admin = True
+                        break
+                else:
+                    print(f"[JOIN-SETUP] {uname} ({chat_id}) fail:", res.get("description") or res)
+            except Exception as e:
+                print(f"[JOIN-SETUP] {uname} err:", e)
+        if ok_admin:
+            print(f"[JOIN-SETUP] ✅ {uname} — ربات ادمین است")
+        else:
+            print(f"[JOIN-SETUP] ❌ {uname} — ربات ادمین نیست یا دسترسی ندارد | last={detail}")
+            print(f"[JOIN-SETUP]    → ربات را در {uname} ادمین کنید (با دسترسی مشاهده اعضا)")
+
 
 def is_bot_on():
     return bool(DATA.get("bot_on", True))
@@ -1427,6 +1595,7 @@ def admin_panel_kb(uid=None):
         ["💎 اهدا الماس", "💎 کسر الماس"],
         ["💰 اهدا سکه", "💰 کسر سکه"],
         ["➕️ اهدا نیرو", "➕️ اهدا بشکه نفت"],
+        ["💣 اهدا اتم", "💣 اهدا ضد اتم"],
         ["⚠️ اخطار", "⚠️ رفع اخطار"],
         ["🚫 مسدود کردن کاربر", "🚫 رفع مسدودی"],
         ["🧑‍🔧 ساخت دکمه", "✏️ ویرایش دکمه"],
@@ -2034,6 +2203,7 @@ def admin_text_input(uid, chat_id, text):
             send_message(chat_id, ASK_COIN_DEDUCT, RK([["🔙 بازگشت"]]))
         return
 
+
     if step in ("gift_dia_amt", "deduct_dia_amt"):
         t = to_en_digits(text).strip()
         if not re.fullmatch(r"-?\d+", t):
@@ -2050,17 +2220,11 @@ def admin_text_input(uid, chat_id, text):
             save_data()
         clear_pending(uid)
         if step == "gift_dia_amt":
-            send_message(chat_id,
-                f"*ادمین گرامی⚠️*\n\n{fad(amount)} الماس به کاربر واریز شد!✔️",
-                admin_panel_kb())
+            send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{fad(amount)} الماس به کاربر واریز شد!✔️", admin_panel_kb())
             if int(target) != int(uid):
-                send_message(target,
-                    f"*کاربر گرامی⚠️*\n\n{fad(amount)} الماس به حساب شما واریز شد!✔️\n\n"
-                    f"کشور خود را بسازید و پیشرفت دهید!📌")
+                send_message(target, f"*کاربر گرامی⚠️*\n\n{fad(amount)} الماس به حساب شما واریز شد!✔️")
         else:
-            send_message(chat_id,
-                f"*ادمین گرامی⚠️*\n\n{fad(amount)} الماس از کاربر کسر شد!✔️",
-                admin_panel_kb())
+            send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{fad(amount)} الماس از کاربر کسر شد!✔️", admin_panel_kb())
         return
 
     if step in ("gift_coin_amt", "deduct_coin_amt"):
@@ -2078,34 +2242,25 @@ def admin_text_input(uid, chat_id, text):
             save_data()
         clear_pending(uid)
         if step == "gift_coin_amt":
-            send_message(chat_id,
-                f"*ادمین گرامی⚠️*\n\n{coins_fa(amount)} به کاربر واریز شد!✔️",
-                admin_panel_kb())
+            send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{coins_fa(amount)} به کاربر واریز شد!✔️", admin_panel_kb())
             if int(target) != int(uid):
-                send_message(target,
-                    f"*کاربر گرامی⚠️*\n\n{coins_fa(amount)} به حساب شما واریز شد!✔️")
+                send_message(target, f"*کاربر گرامی⚠️*\n\n{coins_fa(amount)} به حساب شما واریز شد!✔️")
         else:
-            send_message(chat_id,
-                f"*ادمین گرامی⚠️*\n\n{coins_fa(amount)} از کاربر کسر شد!✔️",
-                admin_panel_kb())
+            send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{coins_fa(amount)} از کاربر کسر شد!✔️", admin_panel_kb())
         return
 
-
-    # اهدا نفت
     if step == "gift_oil_uid":
         t = to_en_digits(text).strip()
         if not re.fullmatch(r"\d{3,15}", t):
             send_message(chat_id, INVALID_UID_TEXT); return
         target = int(t)
-        if str(target) not in DATA["users"]:
-            send_message(chat_id, NOT_STARTED_TEXT); return
         set_pending(uid, "gift_oil_amt", target=target)
-        send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد بشکه نفت مورد نظر را ارسال نمایید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]]))
-        return
+        send_message(chat_id, "*ادمین گرامی⚠️*\n\nمقدار نفت را ارسال کنید!✔️\n\n*مثال : ۱۰۰📌*", RK([["🔙 بازگشت"]])); return
+
     if step == "gift_oil_amt":
         t = to_en_digits(text).strip()
         if not re.fullmatch(r"\d+", t) or int(t) <= 0:
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nلطفا فقط عدد مثبت ارسال کنید!✔️\n\n*مثال : ۱۰📌*"); return
+            send_message(chat_id, "*ادمین گرامی⚠️*\n\nلطفا عدد مثبت بفرستید!✔️"); return
         amount = int(t)
         target = pend["target"]
         tu = get_user(target)
@@ -2113,233 +2268,41 @@ def admin_text_input(uid, chat_id, text):
             tu["oil"] = int(tu.get("oil") or 0) + amount
             save_data()
         clear_pending(uid)
-        send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{fad(amount)} بشکه نفت به کاربر اضافه شد!✔️\n\nعملیات موفقیت آمیز بود!📌", admin_panel_kb())
-        if int(target) != int(uid):
-            send_message(target, f"*کاربر گرامی⚠️*\n\n{fad(amount)} بشکه نفت به حساب شما اضافه شد!✔️")
+        send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{fad(amount)} بشکه نفت به کاربر اضافه شد!✔️", admin_panel_kb())
+        try:
+            send_message(target, f"*کاربر گرامی⚠️*\n\n{fad(amount)} بشکه نفت به شما اضافه شد!✔️")
+        except Exception:
+            pass
         return
 
-
-    # اهدا نیرو — بعد از آیدی: ۵ بخش فروشگاه
-    if step == "gift_force_uid":
+    if step in ("gift_atom_uid", "gift_anti_atom_uid"):
         t = to_en_digits(text).strip()
         if not re.fullmatch(r"\d{3,15}", t):
             send_message(chat_id, INVALID_UID_TEXT); return
         target = int(t)
-        if str(target) not in DATA["users"]:
-            send_message(chat_id, NOT_STARTED_TEXT); return
-        set_pending(uid, "gift_force_section", target=target)
-        send_message(chat_id,
-            "*ادمین گرامی⚠️*\n\nبخش مورد نظر را برای اهدا نیرو انتخاب کنید!✔️\n\nاز منوی زیر استفاده کنید!📌",
-            RK([
-                ["خرید تجهیزات اقتصادی💰💵💵💰", "خرید تجهیزات دفاعی🛡", "خرید تجهیزات جنگی🧨💣"],
-                ["گروهک های هکری👨‍💻", "ساخت و ساز⚙🛠"],
-                ["🔙 بازگشت"],
-            ]))
-        return
-
-    if step == "gift_force_section":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            clear_pending(uid); send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb()); return
-        if text == "خرید تجهیزات اقتصادی💰💵💵💰":
-            set_pending(uid, "gift_force_eco", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nتجهیز اقتصادی را انتخاب کنید!✔️", eco_kb()); return
-        if text == "خرید تجهیزات دفاعی🛡":
-            set_pending(uid, "gift_force_def", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nتجهیز دفاعی را انتخاب کنید!✔️", def_kb()); return
-        if text == "خرید تجهیزات جنگی🧨💣":
-            set_pending(uid, "gift_force_cat", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nدسته جنگی را انتخاب کنید!✔️", war_kb()); return
-        if text == "گروهک های هکری👨‍💻":
-            set_pending(uid, "gift_force_hack_menu", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش هکری را انتخاب کنید!✔️", hack_menu_kb()); return
-        if text == "ساخت و ساز⚙🛠":
-            set_pending(uid, "gift_force_qty", target=target, kind="food")
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد واحد غذا برای اهدا را بفرستید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]])); return
-        send_message(chat_id, UNKNOWN_TEXT); return
-
-    if step == "gift_force_eco":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_section", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش را انتخاب کنید!✔️",
-                RK([["خرید تجهیزات اقتصادی💰💵💵💰", "خرید تجهیزات دفاعی🛡", "خرید تجهیزات جنگی🧨💣"],
-                    ["گروهک های هکری👨‍💻", "ساخت و ساز⚙🛠"], ["🔙 بازگشت"]])); return
-        for it in ECO_ITEMS:
-            if text == it["btn"]:
-                set_pending(uid, "gift_force_qty", target=target, kind="eco", eq_id=it["id"])
-                send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد مورد نظر را ارسال نمایید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]])); return
-        send_message(chat_id, UNKNOWN_TEXT, eco_kb()); return
-
-    if step == "gift_force_def":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_section", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش را انتخاب کنید!✔️",
-                RK([["خرید تجهیزات اقتصادی💰💵💵💰", "خرید تجهیزات دفاعی🛡", "خرید تجهیزات جنگی🧨💣"],
-                    ["گروهک های هکری👨‍💻", "ساخت و ساز⚙🛠"], ["🔙 بازگشت"]])); return
-        for it in DEF_ITEMS:
-            if text == it["btn"]:
-                set_pending(uid, "gift_force_qty", target=target, kind="def", eq_id=it["id"], power=it["power"])
-                send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد مورد نظر را ارسال نمایید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]])); return
-        send_message(chat_id, UNKNOWN_TEXT, def_kb()); return
-
-    if step == "gift_force_hack_menu":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_section", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش را انتخاب کنید!✔️",
-                RK([["خرید تجهیزات اقتصادی💰💵💵💰", "خرید تجهیزات دفاعی🛡", "خرید تجهیزات جنگی🧨💣"],
-                    ["گروهک های هکری👨‍💻", "ساخت و ساز⚙🛠"], ["🔙 بازگشت"]])); return
-        if "تجهیزات هکری" in text or text.startswith("👨🏻‍💻"):
-            set_pending(uid, "gift_force_hack_eq", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nتجهیز هکری را انتخاب کنید!✔️", hack_eq_kb()); return
-        if "ضد" in text:
-            set_pending(uid, "gift_force_hack_anti", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nگروهک ضد‌هکر را انتخاب کنید!✔️", anti_hack_kb()); return
-        if "گروهک‌های هکری" in text or "💻⚡" in text:
-            set_pending(uid, "gift_force_hack_grp", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nگروهک هکری را انتخاب کنید!✔️", hack_group_kb()); return
-        send_message(chat_id, UNKNOWN_TEXT, hack_menu_kb()); return
-
-    if step == "gift_force_hack_eq":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_hack_menu", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش هکری را انتخاب کنید!✔️", hack_menu_kb()); return
-        for it in HACK_EQ_ITEMS:
-            if text == it["btn"]:
-                set_pending(uid, "gift_force_qty", target=target, kind="hack_eq", eq_id=it["id"], pack=it.get("pack", 1))
-                send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد پک مورد نظر را بفرستید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]])); return
-        send_message(chat_id, UNKNOWN_TEXT, hack_eq_kb()); return
-
-    if step == "gift_force_hack_anti":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_hack_menu", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش هکری را انتخاب کنید!✔️", hack_menu_kb()); return
-        for it in ANTI_HACK_GROUPS:
-            if text == it["btn"]:
-                set_pending(uid, "gift_force_qty", target=target, kind="hack_anti", eq_id=it["id"])
-                send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد مورد نظر را بفرستید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]])); return
-        send_message(chat_id, UNKNOWN_TEXT, anti_hack_kb()); return
-
-    if step == "gift_force_hack_grp":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_hack_menu", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش هکری را انتخاب کنید!✔️", hack_menu_kb()); return
-        for it in HACK_GROUPS:
-            if text == it["btn"]:
-                set_pending(uid, "gift_force_qty", target=target, kind="hack_grp", eq_id=it["id"])
-                send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد مورد نظر را بفرستید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]])); return
-        send_message(chat_id, UNKNOWN_TEXT, hack_group_kb()); return
-
-    if step == "gift_force_cat":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_section", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش را انتخاب کنید!✔️",
-                RK([["خرید تجهیزات اقتصادی💰💵💵💰", "خرید تجهیزات دفاعی🛡", "خرید تجهیزات جنگی🧨💣"],
-                    ["گروهک های هکری👨‍💻", "ساخت و ساز⚙🛠"], ["🔙 بازگشت"]])); return
-        for c in WAR_CATS:
-            if text == c["btn"]:
-                set_pending(uid, "gift_force_item", target=target, key=c["key"])
-                send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{c['phrase']}!✔️", war_items_kb(c["key"]))
-                return
-        send_message(chat_id, UNKNOWN_TEXT, war_kb()); return
-
-    if step == "gift_force_item":
-        target = pend.get("target")
-        key = pend.get("key")
-        if text == "🔙 بازگشت":
-            set_pending(uid, "gift_force_cat", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nدسته را انتخاب کنید!✔️", war_kb()); return
-        cat = WAR_CAT_MAP.get(key)
-        if cat:
-            for idx, it in enumerate(cat["items"]):
-                label = _war_btn_label(it["name"])
-                if text == label or text == it["name"]:
-                    set_pending(uid, "gift_force_qty", target=target, kind="war", key=key, idx=idx)
-                    send_message(chat_id, "*ادمین گرامی⚠️*\n\nتعداد نیرو مورد نظر را ارسال نمایید!✔️\n\n*مثال : ۱۰📌*", RK([["🔙 بازگشت"]]))
-                    return
-        send_message(chat_id, UNKNOWN_TEXT, war_items_kb(key)); return
-
-    if step == "gift_force_qty":
-        target = pend.get("target")
-        kind = pend.get("kind") or "war"
-        if text == "🔙 بازگشت":
-            clear_pending(uid)
-            set_pending(uid, "gift_force_section", target=target)
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش را انتخاب کنید!✔️",
-                RK([["خرید تجهیزات اقتصادی💰💵💵💰", "خرید تجهیزات دفاعی🛡", "خرید تجهیزات جنگی🧨💣"],
-                    ["گروهک های هکری👨‍💻", "ساخت و ساز⚙🛠"], ["🔙 بازگشت"]])); return
-        t = to_en_digits(text).strip()
-        if not re.fullmatch(r"\d+", t) or int(t) <= 0:
-            send_message(chat_id, "*ادمین گرامی⚠️*\n\nلطفا فقط عدد مثبت ارسال کنید!✔️\n\n*مثال : ۱۰📌*"); return
-        amount = int(t)
         tu = get_user(target)
         with LOCK:
-            if kind == "war":
-                key, idx = pend.get("key"), pend.get("idx")
-                eq_id = f"{key}_{idx + 1}"
-                eq = tu.setdefault("equipment", {})
-                eq[str(eq_id)] = int(eq.get(str(eq_id), 0) or 0) + amount
-            elif kind == "eco":
-                eq_id = pend.get("eq_id")
-                eq = tu.setdefault("equipment", {})
-                eq[eq_id] = int(eq.get(eq_id, 0) or 0) + amount
-            elif kind == "def":
-                eq_id = pend.get("eq_id")
-                pw = int(pend.get("power") or 0)
-                eq = tu.setdefault("equipment", {})
-                eq[eq_id] = int(eq.get(eq_id, 0) or 0) + amount
-                tu.setdefault("def_hp", {})[eq_id] = int(tu.get("def_hp", {}).get(eq_id, 0) or 0) + pw * amount
-                en = tu.get("country")
-                c = DATA["countries"].get(en) if en else None
-                if isinstance(c, dict):
-                    c["power"] = int(c.get("power") or BASE_COUNTRY_POWER) + pw * amount
-            elif kind == "hack_eq":
-                eq_id = pend.get("eq_id")
-                pack = int(pend.get("pack") or 1)
-                tu[eq_id] = int(tu.get(eq_id) or 0) + amount * pack
-            elif kind == "hack_anti":
-                gid = pend.get("eq_id")
-                ah = tu.setdefault("antihackers", {})
-                ah[gid] = int(ah.get(gid, 0) or 0) + amount
-            elif kind == "hack_grp":
-                gid = pend.get("eq_id")
-                hk = tu.setdefault("hackers", {})
-                hk[gid] = int(hk.get(gid, 0) or 0) + amount
-            elif kind == "food":
-                tu["food"] = int(tu.get("food") or 0) + amount
+            if step == "gift_atom_uid":
+                tu.setdefault("equipment", {})["atom"] = int(tu["equipment"].get("atom", 0) or 0) + 1
+                kind = "اتم"
+            else:
+                tu.setdefault("equipment", {})["anti_atom"] = int(tu["equipment"].get("anti_atom", 0) or 0) + 1
+                tu["nuke_def"] = True
+                kind = "ضد اتم"
             save_data()
         clear_pending(uid)
-        send_message(chat_id,
-            f"*ادمین گرامی⚠️*\n\n{fad(amount)} واحد با موفقیت به کاربر اضافه شد!✔️\n\nعملیات موفقیت آمیز بود!📌",
-            admin_panel_kb())
-        if int(target) != int(uid):
-            send_message(target,
-                "*کاربر گرامی⚠️*\n\nچند عدد تجهیزات به شما اضافه شد!✔️\n\nاز بخش تجهیزات🚀 می توانید تجهیزات خود را مشاهده کنید!📌")
+        send_message(chat_id, f"*ادمین گرامی⚠️*\n\n{kind} با موفقیت به کاربر اهدا شد!✔️", admin_panel_kb())
+        try:
+            send_message(target, f"*کاربر گرامی⚠️*\n\nیک {kind} به تجهیزات شما اضافه شد!✔️")
+        except Exception:
+            pass
         return
 
-
-
-    # اخطار / مسدود / جستجو
-    if step in ("warn_uid", "unwarn_uid", "block_uid", "unblock_uid", "search_uid"):
+    if step in ("warn_uid", "unwarn_uid", "block_uid", "unblock_uid"):
         t = to_en_digits(text).strip()
         if not re.fullmatch(r"\d{3,15}", t):
             send_message(chat_id, INVALID_UID_TEXT); return
         target = int(t)
-        if str(target) not in DATA["users"] and step != "search_uid":
-            # برای سرچ هم اگر نبود بساز نکن
-            send_message(chat_id, NOT_STARTED_TEXT); return
-        if step == "search_uid":
-            if str(target) not in DATA["users"]:
-                send_message(chat_id, NOT_STARTED_TEXT, admin_panel_kb()); clear_pending(uid); return
-            clear_pending(uid)
-            send_message(chat_id, equipment_status_text(target), admin_panel_kb())
-            return
         tu = get_user(target)
         if step == "warn_uid":
             with LOCK:
@@ -2349,15 +2312,12 @@ def admin_text_input(uid, chat_id, text):
                     tu["blocked"] = True
                 save_data()
             clear_pending(uid)
-            send_message(chat_id,
-                f"*ادمین گرامی⚠️*\n\nکاربر مورد نظر اخطار دریافت کرد!✔️\n\nاخطار کاربر مورد نظر برابر با {fad(w)}/۳ شد📌",
-                admin_panel_kb())
+            send_message(chat_id, f"*ادمین گرامی⚠️*\n\nکاربر اخطار گرفت!✔️\n\nاخطار: {fad(w)}/۳📌", admin_panel_kb())
             try:
                 if w >= 3:
-                    send_message(target, "*کاربر گرامی⚠️*\n\nشما از ربات مسدود شدید!✖️\n\nشما تخلف کردید!📌")
+                    send_message(target, "*کاربر گرامی⚠️*\n\nشما از ربات مسدود شدید!✖️")
                 else:
-                    send_message(target,
-                        f"*کاربر گرامی⚠️*\n\nشما از طرف ربات اخطار دریافت کردید!✖️\n\nاخطار شما برابر با {w}/۳ می باشد!📌")
+                    send_message(target, f"*کاربر گرامی⚠️*\n\nاخطار دریافت کردید!✖️\n\nاخطار: {fad(w)}/۳📌")
             except Exception:
                 pass
             return
@@ -2365,9 +2325,7 @@ def admin_text_input(uid, chat_id, text):
             w = int(tu.get("warnings") or 0)
             if w <= 0:
                 clear_pending(uid)
-                send_message(chat_id,
-                    "*ادمین گرامی⚠️*\n\nاین کاربر اخطاری ندارد!✔️\n\nنیازی به رفع اخطار نیست!📌",
-                    admin_panel_kb()); return
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nاین کاربر اخطاری ندارد!✔️", admin_panel_kb()); return
             with LOCK:
                 tu["warnings"] = w - 1
                 w = tu["warnings"]
@@ -2375,83 +2333,56 @@ def admin_text_input(uid, chat_id, text):
                     tu["blocked"] = False
                 save_data()
             clear_pending(uid)
-            send_message(chat_id,
-                f"*ادمین گرامی⚠️*\n\n1 اخطار کاربر رفع شد!✔️\n\nاخطار کاربر برابر با {w}/۳ شد!📌",
-                admin_panel_kb())
+            send_message(chat_id, f"*ادمین گرامی⚠️*\n\n۱ اخطار رفع شد!✔️\n\nاخطار: {fad(w)}/۳📌", admin_panel_kb())
             try:
-                send_message(target,
-                    f"*کاربر گرامی⚠️*\n\n1 اخطار شما توسط ربات رفع شد!✔️\n\nاخطار شما برابر با {w}/۳ می باشد!📌")
+                send_message(target, f"*کاربر گرامی⚠️*\n\n۱ اخطار رفع شد!✔️\n\nاخطار: {fad(w)}/۳📌")
             except Exception:
                 pass
             return
         if step == "block_uid":
             if tu.get("blocked"):
                 clear_pending(uid)
-                send_message(chat_id,
-                    "*ادمین گرامی⚠️*\n\nکاربر مورد از پیش مسدود بوده است!✔️\n\nنیازی به مسدود کردن کاربر نیست!📌",
-                    admin_panel_kb()); return
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nکاربر از پیش مسدود بوده!✔️", admin_panel_kb()); return
             with LOCK:
                 tu["blocked"] = True
                 save_data()
             clear_pending(uid)
-            send_message(chat_id,
-                "*ادمین گرامی⚠️*\n\nکاربر مورد نظر از ربات مسدود شد!✔️\n\nعملیات مسدودی با موفقیت انجام شد!📌",
-                admin_panel_kb())
+            send_message(chat_id, "*ادمین گرامی⚠️*\n\nکاربر مسدود شد!✔️", admin_panel_kb())
             try:
-                send_message(target,
-                    "*کاربر گرامی⚠️*\n\nشما توسط ربات مسدود شدید!✔️\n\nشما تخلف کردید!📌")
+                send_message(target, "*کاربر گرامی⚠️*\n\nشما مسدود شدید!✔️")
             except Exception:
                 pass
             return
         if step == "unblock_uid":
             if not tu.get("blocked"):
                 clear_pending(uid)
-                send_message(chat_id,
-                    "*ادمین گرامی⚠️*\n\nکاربر مورد از پیش مسدود نبوده است!✖️\n\nنیازی به رفع مسدودی کاربر نیست!📌",
-                    admin_panel_kb()); return
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nکاربر مسدود نبوده!✖️", admin_panel_kb()); return
             with LOCK:
                 tu["blocked"] = False
                 save_data()
             clear_pending(uid)
-            send_message(chat_id,
-                "*ادمین گرامی⚠️*\n\nکاربر مورد نظر از مسدودی خارج شد!✔️\n\nسپاس از توجه شما!📌",
-                admin_panel_kb())
+            send_message(chat_id, "*ادمین گرامی⚠️*\n\nمسدودی رفع شد!✔️", admin_panel_kb())
             try:
-                send_message(target,
-                    "*کاربر گرامی⚠️*\n\nشما توسط ربات از مسدودی خارج شدید!✔️\n\nحال می توانید از ربات استفاده کنید!📌")
+                send_message(target, "*کاربر گرامی⚠️*\n\nاز مسدودی خارج شدید!✔️")
             except Exception:
                 pass
             return
 
-    # ساخت / ویرایش دکمه
     if step == "btn_create_name":
         name = text.strip()
-        if not name or name == "🔙 بازگشت":
-            clear_pending(uid); send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb()); return
+        if not name:
+            return
         set_pending(uid, "btn_create_text", name=name)
-        send_message(chat_id,
-            "*ادمین گرامی⚠️*\n\nمتن این دکمه را وارد نمایید!✔️\n\nمتن دارای طول مناسب باشد و تنها در یک پیام ارسال گردد!📌",
-            RK([["🔙 بازگشت"]])); return
+        send_message(chat_id, "*ادمین گرامی⚠️*\n\nمتن این دکمه را وارد نمایید!✔️", RK([["🔙 بازگشت"]])); return
     if step == "btn_create_text":
-        if text == "🔙 بازگشت":
-            clear_pending(uid); send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb()); return
         name = pend.get("name")
         bid = f"cb{int(time.time())}"
         with LOCK:
             DATA.setdefault("custom_buttons", []).append({"id": bid, "name": name, "text": text})
-            # از لیست حذف‌شده‌ها دربیاور اگر دوباره ساخته شد
-            dn = DATA.get("deleted_button_names") or []
-            if name in dn:
-                dn.remove(name)
-                DATA["deleted_button_names"] = dn
             save_data()
         clear_pending(uid)
-        send_message(chat_id,
-            "*ادمین گرامی⚠️*\n\nدکمه جدید با موفقیت ساخته شد!✔️\n\nعملیات ساخت دکمه موفقیت آمیز بود!📌",
-            admin_panel_kb()); return
+        send_message(chat_id, "*ادمین گرامی⚠️*\n\nدکمه جدید ساخته شد!✔️", admin_panel_kb()); return
     if step == "btn_edit_text":
-        if text == "🔙 بازگشت":
-            clear_pending(uid); send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb()); return
         bid = pend.get("bid")
         with LOCK:
             for b in DATA.get("custom_buttons") or []:
@@ -2460,654 +2391,36 @@ def admin_text_input(uid, chat_id, text):
                     break
             save_data()
         clear_pending(uid)
-        send_message(chat_id,
-            "*ادمین گرامی⚠️*\n\nدکمه مورد نظر با موفقیت ویرایش شد!✔️\n\nاز شما متشکریم!📌",
-            admin_panel_kb()); return
+        send_message(chat_id, "*ادمین گرامی⚠️*\n\nدکمه ویرایش شد!✔️", admin_panel_kb()); return
 
-
-    # ap / dp / ag — آیدی عددی
-    t = to_en_digits(text).strip()
-    if not re.fullmatch(r"\d{3,15}", t):
-        send_message(chat_id, INVALID_UID_TEXT)
-        return
-    target = int(t)
-    if str(target) not in DATA["users"]:
-        send_message(chat_id, NOT_STARTED_TEXT)
-        return
-
-    if step == "ap":
-        set_pending(uid, "ap_level", target=target)
-        send_message(chat_id, PRINTER_LEVEL_ASK, printer_level_kb())
-    elif step == "dp":
-        tu = DATA["users"][str(target)]
-        with LOCK:
-            if tu.get("printer"):
+    if step in ("ap", "dp", "ag", "gift_force_uid"):
+        t = to_en_digits(text).strip()
+        if not re.fullmatch(r"\d{3,15}", t):
+            send_message(chat_id, INVALID_UID_TEXT); return
+        target = int(t)
+        if step == "ap":
+            set_pending(uid, "ap_level", target=target)
+            send_message(chat_id, PRINTER_LEVEL_ASK, printer_level_kb()); return
+        if step == "dp":
+            tu = get_user(target)
+            with LOCK:
                 tu["printer"] = 0
                 save_data()
-                msg_text = PRINTER_REMOVED_TEXT
-            else:
-                msg_text = PRINTER_OFF_TEXT
-        clear_pending(uid)
-        send_message(chat_id, msg_text, admin_panel_kb())
-    elif step == "ag":
-        i = pend.get("idx", 0)
-        flag, en, name, vip = COUNTRIES[i]
-        tu = DATA["users"][str(target)]
-        if tu.get("country"):
-            send_message(chat_id, GIFT_HAS_COUNTRY_TEXT)
-            return
-        with LOCK:
-            DATA.setdefault("destroyed", {}).pop(en, None)
-            DATA["countries"][en] = {
-                "owner": target, "power": BASE_COUNTRY_POWER,
-                "hacked_until": None, "start_ts": time.time(),
-            }
-            tu["country"] = en
-            tu["banned"] = False
-            tu["country_start"] = time.time()
-            tu["satisfaction"] = 0
-            tu["houses"] = {}
-            tu["hq"] = tu["pc"] = tu["comm"] = tu["sat"] = 0
-            tu["hackers"] = {}
-            tu["antihackers"] = {}
-            tu["workers_perm"] = 0
-            tu["workers_temp"] = []
-            tu["food"] = 0
-            tu["coins"] = START_COINS
-            tu["equipment"] = {}
-            tu["hack_until"] = None
-            save_data()
-        clear_pending(uid)
-        print(f"[GIFT] {en} -> {target}")
-        send_message(chat_id, GIFT_OK_TEXT, admin_panel_kb())
-        send_message(target,
-            f"*کاربر گرامی⚠️*\n\nکشور {flag} {name} به شما اهدا شد!✔️\n\n"
-            f"از صفر شروع کنید — موجودی: {coins_fa(START_COINS)}📌")
-
-
-# ───────────────────────────── فروشگاه اقتصادی ─────────────────────────────
-def handle_eco_select(uid, chat_id, text):
-    for n, it in enumerate(ECO_ITEMS, 1):
-        if text == it["btn"]:
-            # نمایش کارت + تأیید/لغو شیشه‌ای
-            card = f"{it['title']}\n{it['price_t']}\n{it['profit_t']}"
-            if it.get("oil_t"):
-                card += "\n" + it["oil_t"]
-            set_pending(uid, "eco_buy", n=n)
-            send_message(chat_id, card, {"inline_keyboard": IK([[("خرید✔️", f"eb{n}"), ("لغو✖️", "se")]])})
-            return
-    for lvl in (1, 2, 3):
-        if text == f"دستگاه چاپ پول سطح {LVL_FA[lvl]} 🎁":
-            name, price, income = PRINTERS[lvl]
-            card = (f"*« {name} »*\n\n"
-                    f"قیمت : {price}\n"
-                    f"درآمد : {income}\n\n"
-                    f"برای خرید به آیدی زیر مراجعه نمایید!✔️\n\n"
-                    f"- @gymrooo")
-            send_message(chat_id, card, eco_kb())
-            return
-    if text == "🔙 بازگشت":
-        send_message(chat_id, SHOP_TEXT, shop_kb())
-        return
-    send_message(chat_id, UNKNOWN_TEXT, eco_kb())
-
-def on_eco_buy(uid, chat_id, mid, n):
-    if not (1 <= n <= len(ECO_ITEMS)):
-        return
-    it = ECO_ITEMS[n - 1]
-    u = get_user(uid)
-    if not u.get("country"):
-        clear_pending(uid)
-        edit_message(chat_id, mid, NEED_COUNTRY_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", main_menu_kb(uid))
-        return
-    ok, bal = True, 0
-    with LOCK:
-        if u["coins"] < it["price"]:
-            ok, bal = False, u["coins"]
-        else:
-            u["coins"] -= it["price"]
-            u["equipment"][it["id"]] = u["equipment"].get(it["id"], 0) + 1
-            save_data()
-    clear_pending(uid)
-    if ok:
-        print(f"[BUY] {uid} -> {it['id']}")
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", eco_kb())
-    else:
-        edit_message(chat_id, mid,
-                     f"*کاربر گرامی⚠️*\n\nدارایی شما {coins_fa(bal)} است!✔️\n\nتوان خرید این تجهیزات را ندارید!📌")
-        send_message(chat_id, "از منوی زیر استفاده کنید.", eco_kb())
-
-# ───────────────────────────── فروشگاه دفاعی ─────────────────────────────
-def handle_def_select(uid, chat_id, text):
-    for n, it in enumerate(DEF_ITEMS, 1):
-        if text == it["btn"]:
-            card = f"{it['btn']}\nقیمت کل: {it['pt']} 💸\nقدرت تخریب: {fad(it['power'])}"
-            set_pending(uid, "def_buy", n=n)
-            send_message(chat_id, card, {"inline_keyboard": IK([[("خرید✔️", f"db{n}"), ("لغو✖️", "sd")]])})
-            return
-    if text == "🛡پدافند ضد بمب اتم":
-        send_message(chat_id, NUKE_CARD_TEXT, def_kb())
-        return
-    if text == "🔙 بازگشت":
-        send_message(chat_id, SHOP_TEXT, shop_kb())
-        return
-    send_message(chat_id, UNKNOWN_TEXT, def_kb())
-
-def on_def_buy(uid, chat_id, mid, n):
-    if not (1 <= n <= len(DEF_ITEMS)):
-        return
-    it = DEF_ITEMS[n - 1]
-    u = get_user(uid)
-    if not u.get("country"):
-        clear_pending(uid)
-        edit_message(chat_id, mid, NEED_COUNTRY_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", main_menu_kb(uid))
-        return
-    ok, bal = True, 0
-    with LOCK:
-        if u["coins"] < it["price"]:
-            ok, bal = False, u["coins"]
-        else:
-            u["coins"] -= it["price"]
-            u["equipment"][it["id"]] = u["equipment"].get(it["id"], 0) + 1
-            u.setdefault("def_hp", {})[it["id"]] = int(u.get("def_hp", {}).get(it["id"], 0) or 0) + it["power"]
-            
-            en = u.get("country")
-            c = DATA["countries"].get(en)
-            if isinstance(c, dict):
-                c["power"] = int(c.get("power") or BASE_COUNTRY_POWER) + it["power"]
-            elif en:
-                DATA["countries"][en] = {"owner": uid, "power": BASE_COUNTRY_POWER + it["power"], "hacked_until": None, "start_ts": time.time()}
-            save_data()
-    clear_pending(uid)
-    if ok:
-        print(f"[BUY] {uid} -> {it['id']}")
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", def_kb())
-    else:
-        edit_message(chat_id, mid,
-                     f"*کاربر گرامی⚠️*\n\nدارایی شما {coins_fa(bal)} است!✔️\n\nتوان خرید این تجهیزات را ندارید!📌")
-        send_message(chat_id, "از منوی زیر استفاده کنید.", def_kb())
-
-# ───────────────────────────── فروشگاه جنگی ─────────────────────────────
-def handle_war_cat_select(uid, chat_id, text):
-    for c in WAR_CATS:
-        if text == c["btn"]:
-            set_pending(uid, "war_cat", key=c["key"])
-            msg = f"*کاربر گرامی⚠️*\n\n{c['phrase']}!✔️\n\nاز منوی زیر استفاده کنید!📌"
-            send_message(chat_id, msg, war_items_kb(c["key"]))
-            return
-    if text == "🔙 بازگشت":
-        send_message(chat_id, SHOP_TEXT, shop_kb())
-        return
-    send_message(chat_id, UNKNOWN_TEXT, war_kb())
-
-def handle_war_item_select(uid, chat_id, text, key):
-    cat = WAR_CAT_MAP.get(key)
-    if not cat:
-        send_message(chat_id, WAR_TEXT, war_kb())
-        return
-    if text == "🔙 بازگشت":
-        clear_pending(uid)
-        send_message(chat_id, WAR_TEXT, war_kb())
-        return
-    for idx, it in enumerate(cat["items"]):
-        label = _war_btn_label(it["name"])
-        if text == label or text == it["name"]:
-            price_line = f"💸 قیمت کل: {it['price_t']}"
-            if it["dia"]:
-                price_line += f" + {fnum(it['dia'])} الماس"
-            card = f"{it['name']}\n{price_line}\nقدرت تخریب: {fad(it['power'])}"
-            set_pending(uid, "war_buy", key=key, idx=idx)
-            send_message(chat_id, card, {"inline_keyboard": IK([[("خرید✔️", f"wb:{key}:{idx}"), ("لغو✖️", f"wc{key}")]])})
-            return
-    send_message(chat_id, UNKNOWN_TEXT, war_items_kb(key))
-
-def on_war_buy(uid, chat_id, mid, key, idx):
-    cat = WAR_CAT_MAP.get(key)
-    if not cat or idx >= len(cat["items"]):
-        return
-    it = cat["items"][idx]
-    u = get_user(uid)
-    if not u.get("country"):
-        clear_pending(uid)
-        edit_message(chat_id, mid, NEED_COUNTRY_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", main_menu_kb(uid))
-        return
-    eq_id = f"{key}_{idx + 1}"
-    ok = True
-    coins = u["coins"]
-    dia = u["diamonds"]
-    with LOCK:
-        if u["coins"] < it["price"] or u["diamonds"] < it["dia"]:
-            ok = False
-        else:
-            u["coins"] -= it["price"]
-            u["diamonds"] -= it["dia"]
-            u["equipment"][eq_id] = u["equipment"].get(eq_id, 0) + 1
-            save_data()
-    set_pending(uid, "war_cat", key=key)
-    if ok:
-        print(f"[BUY] {uid} -> {eq_id}")
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", war_items_kb(key))
-    else:
-        if it["dia"]:
-            bal = f"دارایی شما {coins_fa(coins)} و {fnum(dia)} الماس است!✔️"
-        else:
-            bal = f"دارایی شما {coins_fa(coins)} است!✔️"
-        edit_message(chat_id, mid,
-                     f"*کاربر گرامی⚠️*\n\n{bal}\n\nتوان خرید این تجهیزات را ندارید!📌")
-        send_message(chat_id, "از منوی زیر استفاده کنید.", war_items_kb(key))
-
-# ───────────────────────────── سود نیمه‌شب ─────────────────────────────
-def calc_user_daily_income(u):
-    """محاسبه سود روزانه یک کاربر از تجهیزات اقتصادی + چاپ‌پول + نفت"""
-    income = 0
-    for iid, cnt in u.get("equipment", {}).items():
-        eco = ECO_MAP.get(iid)
-        if eco and cnt:
-            income += eco["profit"] * int(cnt)
-    oil_gain = int(u.get("equipment", {}).get("eco6", 0) or 0) * OIL_PER_FIELD
-    lvl = int(u.get("printer") or 0)
-    if lvl in PRINTER_INCOME:
-        income += PRINTER_INCOME[lvl]
-    return income, oil_gain
-
-def distribute_profits():
-    """پرداخت سود روزانه — فقط تجهیزات اقتصادی و دستگاه چاپ پول سود می‌دهند
-    (تجهیزات دفاعی و جنگی فقط قدرت تخریب دارند و سود روزانه ندارند)"""
-    payouts = []
-    with LOCK:
-        for uid, u in list(DATA["users"].items()):
-            income, oil_gain = calc_user_daily_income(u)
-            if income or oil_gain:
-                u["coins"] = int(u.get("coins", 0)) + income
-                u["oil"] = int(u.get("oil", 0)) + oil_gain
-                payouts.append((uid, income, oil_gain))
-                pass  # quiet
-        DATA["last_payout"] = datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d")
-        save_data()
-    pass  # quiet
-    if NOTIFY_PROFIT:
-        for uid, income, oil in payouts:
-            try:
-                text = f"*کاربر گرامی⚠️*\n\nسود روزانه تجهیزات شما به مبلغ {coins_fa(income)} پرداخت شد!✔️"
-                if oil:
-                    text += f"\n\n{fad(oil)} بشکه نفت نیز به موجودی شما اضافه شد!📌"
-                send_message(int(uid), text)
-            except Exception as e:
-                print(f"[PROFIT] ارسال پیام به {uid} ناموفق: {e}")
-            time.sleep(0.05)
-
-def catchup_payout():
-    """اگر ربات موقع نیمه‌شب خاموش بوده، هنگام روشن شدن پرداخت معوقه انجام می‌شود"""
-    now = datetime.now(TEHRAN_TZ)
-    today = now.strftime("%Y-%m-%d")
-    last = DATA.get("last_payout")
-    if last is None:
-        DATA["last_payout"] = today
-        save_data()
-        pass  # quiet
-        return
-    # اگر آخرین پرداخت مربوط به امروز نبود و از ساعت ۰۰:۰۰:۰۱ گذشته → پرداخت
-    if last < today:
-        pass  # quiet
-        distribute_profits()
-    else:
-        pass  # quiet
-
-def profit_worker():
-    with LOCK:
-        catchup_payout()
-    while True:
-        now = datetime.now(TEHRAN_TZ)
-        target = now.replace(hour=0, minute=0, second=1, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        wait = (target - datetime.now(TEHRAN_TZ)).total_seconds()
-        pass  # quiet
-        time.sleep(max(1, wait))
-        try:
-            # جلوگیری از پرداخت دوباره در همان روز
-            today = datetime.now(TEHRAN_TZ).strftime("%Y-%m-%d")
-            if DATA.get("last_payout") == today:
-                pass  # quiet
-            else:
-                distribute_profits()
-        except Exception as e:
-            print("[PROFIT] خطا:", e)
-        try:
-            check_satisfaction()
-        except Exception:
-            pass
-        time.sleep(5)
-
-
-def on_hack_eq_buy(uid, chat_id, mid, eq_id):
-    it = HACK_EQ_MAP.get(eq_id)
-    if not it:
-        return
-    u = get_user(uid)
-    if is_hacked(u):
-        clear_pending(uid); edit_message(chat_id, mid, HACKED_TEXT); return
-    if not u.get("country"):
-        clear_pending(uid); edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
-    if eq_id == "pc":
-        if int(u.get("hq") or 0) < 50:
-            clear_pending(uid); edit_message(chat_id, mid, NEED_BASE_FOR_PC)
-            send_message(chat_id, "از منوی زیر استفاده کنید.", hack_eq_kb()); return
-        if int(u.get("comm") or 0) < 50:
-            clear_pending(uid); edit_message(chat_id, mid, NEED_COMM50_TEXT)
-            send_message(chat_id, "از منوی زیر استفاده کنید.", hack_eq_kb()); return
-    if eq_id in ("comm", "sat") and int(u.get("hq") or 0) < 10:
-        clear_pending(uid); edit_message(chat_id, mid, NEED_BASE50_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_eq_kb()); return
-    coins, dia = int(u["coins"]), int(u["diamonds"])
-    ok = True
-    with LOCK:
-        if coins < it["price"] or dia < it["dia"]:
-            ok = False
-        else:
-            u["coins"] -= it["price"]; u["diamonds"] -= it["dia"]
-            u[eq_id] = int(u.get(eq_id) or 0) + it["pack"]
-            save_data()
-    clear_pending(uid)
-    if ok:
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, f"موجودی {it['btn']}: {fad(u[eq_id])}", hack_eq_kb())
-    else:
-        edit_message(chat_id, mid, insufficient_msg(it["price"], it["dia"], coins, dia))
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_eq_kb())
-
-def on_anti_hack_buy(uid, chat_id, mid, gid):
-    it = ANTI_HACK_MAP.get(gid)
-    if not it: return
-    u = get_user(uid)
-    if is_hacked(u):
-        clear_pending(uid); edit_message(chat_id, mid, HACKED_TEXT); return
-    if not u.get("country"):
-        clear_pending(uid); edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
-    if not can_hack_ops(u):
-        clear_pending(uid)
-        edit_message(chat_id, mid, hack_eq_missing_text(u))
-        send_message(chat_id, "از منوی زیر استفاده کنید.", anti_hack_kb()); return
-    coins, dia = int(u["coins"]), int(u["diamonds"])
-    ok = True
-    with LOCK:
-        if coins < it["price"] or dia < it["dia"]:
-            ok = False
-        else:
-            u["coins"] -= it["price"]; u["diamonds"] -= it["dia"]
-            ah = u.setdefault("antihackers", {}); ah[gid] = ah.get(gid, 0) + 1
-            save_data()
-    clear_pending(uid)
-    if ok:
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", anti_hack_kb())
-    else:
-        edit_message(chat_id, mid, insufficient_msg(it["price"], it["dia"], coins, dia))
-        send_message(chat_id, "از منوی زیر استفاده کنید.", anti_hack_kb())
-
-def on_hack_group_buy(uid, chat_id, mid, gid):
-    it = HACK_GROUP_MAP.get(gid)
-    if not it: return
-    u = get_user(uid)
-    if is_hacked(u):
-        clear_pending(uid); edit_message(chat_id, mid, HACKED_TEXT); return
-    if not u.get("country"):
-        clear_pending(uid); edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
-    if not can_hack_ops(u):
-        clear_pending(uid)
-        edit_message(chat_id, mid, hack_eq_missing_text(u))
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_group_kb()); return
-    coins, dia = int(u["coins"]), int(u["diamonds"])
-    ok = True
-    with LOCK:
-        if coins < it["price"] or dia < it["dia"]:
-            ok = False
-        else:
-            u["coins"] -= it["price"]; u["diamonds"] -= it["dia"]
-            hk = u.setdefault("hackers", {}); hk[gid] = hk.get(gid, 0) + 1
-            save_data()
-    clear_pending(uid)
-    if ok:
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_group_kb())
-    else:
-        edit_message(chat_id, mid, insufficient_msg(it["price"], it["dia"], coins, dia))
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_group_kb())
-
-def on_worker_rent_buy(uid, chat_id, mid, idx):
-    if idx < 0 or idx >= len(WORKER_RENT): return
-    w = WORKER_RENT[idx]
-    u = get_user(uid)
-    if is_hacked(u):
-        clear_pending(uid); edit_message(chat_id, mid, HACKED_TEXT); return
-    if not u.get("country"):
-        clear_pending(uid); edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
-    if int(u.get("food") or 0) < w["food"]:
-        clear_pending(uid); edit_message(chat_id, mid, NO_FOOD_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb()); return
-    coins = int(u["coins"]); ok = True
-    with LOCK:
-        if coins < w["price"]:
-            ok = False
-        else:
-            u["coins"] -= w["price"]
-            u["food"] = int(u.get("food") or 0) - w["food"]
-            u.setdefault("workers_temp", []).append({"n": w["n"], "until": time.time() + w["days"] * 86400})
-            save_data()
-    clear_pending(uid)
-    if ok:
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, f"کارگران فعال: {fad(active_workers(u))}", worker_kb())
-    else:
-        edit_message(chat_id, mid, NO_COIN_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb())
-
-def on_worker_perm_buy(uid, chat_id, mid):
-    u = get_user(uid)
-    if is_hacked(u):
-        clear_pending(uid); edit_message(chat_id, mid, HACKED_TEXT); return
-    if not u.get("country"):
-        clear_pending(uid); edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
-    if int(u.get("food") or 0) < WORKER_FOOD_PER_DAY:
-        clear_pending(uid); edit_message(chat_id, mid, NO_FOOD_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb()); return
-    coins = int(u["coins"]); ok = True
-    with LOCK:
-        if coins < WORKER_BUY_PRICE:
-            ok = False
-        else:
-            u["coins"] -= WORKER_BUY_PRICE
-            u["food"] = int(u.get("food") or 0) - WORKER_FOOD_PER_DAY
-            u["workers_perm"] = int(u.get("workers_perm") or 0) + 1
-            save_data()
-    clear_pending(uid)
-    if ok:
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, f"کارگران فعال: {fad(active_workers(u))}", worker_kb())
-    else:
-        edit_message(chat_id, mid, NO_COIN_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb())
-
-def on_house_buy(uid, chat_id, mid, hid):
-    it = next((h for h in HOUSE_ITEMS if h["id"] == hid), None)
-    if not it: return
-    u = get_user(uid)
-    if is_hacked(u):
-        clear_pending(uid); edit_message(chat_id, mid, HACKED_TEXT); return
-    if not u.get("country"):
-        clear_pending(uid); edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
-    if active_workers(u) < it["workers"]:
-        clear_pending(uid); edit_message(chat_id, mid, NO_WORKER_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", house_kb()); return
-    coins = int(u["coins"]); ok = True
-    with LOCK:
-        if coins < it["price"]:
-            ok = False
-        else:
-            u["coins"] -= it["price"]
-            hs = u.setdefault("houses", {}); hs[hid] = hs.get(hid, 0) + 1
-            u["satisfaction"] = int(u.get("satisfaction") or 0) + it["sat"]
-            save_data()
-    clear_pending(uid)
-    if ok:
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, f"رضایت مردم: {fad(u['satisfaction'])}٪", house_kb())
-    else:
-        edit_message(chat_id, mid, NO_COIN_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", house_kb())
-
-def on_food_buy(uid, chat_id, mid, packs):
-    u = get_user(uid)
-    if is_hacked(u):
-        clear_pending(uid); edit_message(chat_id, mid, HACKED_TEXT); return
-    cost = packs * FOOD_PACK_PRICE
-    coins = int(u["coins"]); ok = True
-    with LOCK:
-        if coins < cost:
-            ok = False
-        else:
-            u["coins"] -= cost
-            u["food"] = int(u.get("food") or 0) + packs * 100
-            save_data()
-    clear_pending(uid)
-    if ok:
-        edit_message(chat_id, mid, BUY_OK_TEXT)
-        send_message(chat_id, f"موجودی غذا: {fad(u['food'])}", build_kb())
-    else:
-        edit_message(chat_id, mid, NO_COIN_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", build_kb())
-
-
-# ───────────────────────────── مسیریابی Callback (فقط تأیید/لغو) ─────────────────────────────
-def route_callback(uid, chat_id, mid, data):
-    if data.startswith("cy"):  # تأیید کشور
-        on_country_confirm(uid, chat_id, mid, int(data[2:]))
-    elif data == "cx":  # لغو کشور
-        clear_pending(uid)
-        edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "به لیست کشورها بازگشتید.", country_kb())
-    elif data.startswith("eb"):  # خرید اقتصادی
-        on_eco_buy(uid, chat_id, mid, int(data[2:]))
-    elif data == "se":  # لغو اقتصادی
-        clear_pending(uid)
-        edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", eco_kb())
-    elif data.startswith("db"):  # خرید دفاعی
-        on_def_buy(uid, chat_id, mid, int(data[2:]))
-    elif data == "sd":  # لغو دفاعی
-        clear_pending(uid)
-        edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", def_kb())
-    elif data.startswith("wb:"):  # خرید جنگی
-        _, key, idx = data.split(":")
-        on_war_buy(uid, chat_id, mid, key, int(idx))
-    elif data.startswith("wc"):  # لغو جنگی
-        key = data[2:]
-        clear_pending(uid)
-        set_pending(uid, "war_cat", key=key)
-        edit_message(chat_id, mid, CANCEL_TEXT)
-        cat = WAR_CAT_MAP.get(key)
-        phrase = cat["phrase"] if cat else "تجهیزات"
-        send_message(chat_id, f"*کاربر گرامی⚠️*\n\n{phrase}!✔️\n\nاز منوی زیر استفاده کنید!📌", war_items_kb(key))
-    elif data == "fjok":
-        if missing_force_channels(uid):
-            edit_message(chat_id, mid, FORCE_JOIN_TEXT)
-            send_message(chat_id, FORCE_JOIN_TEXT, force_join_kb())
-        else:
             clear_pending(uid)
-            try:
-                edit_message(chat_id, mid, "*کاربر گرامی⚠️*\n\nعضویت شما تأیید شد!✔️")
-            except Exception:
-                pass
-            send_message(chat_id, WELCOME, main_menu_kb(uid))
-    elif data.startswith("sup:"):
-        target = int(data[4:])
-        clear_pending(uid)
-        set_pending(uid, "admin_reply", target=target)
-        send_message(chat_id,
-            "*ادمین گرامی⚠️*\n\nپیام خود را برای کاربر ارسال نمایید!✔️\n\nمنتظر پاسخ گویی شما هستیم!📌",
-            RK([["🔙 بازگشت"]]))
-    elif data.startswith("ha:"):
-        target_en = data[3:]
-        clear_pending(uid)
-        ok, msg = do_hack_attack(uid, target_en)
-        edit_message(chat_id, mid, msg)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_menu_kb())
-    elif data == "hac":
-        clear_pending(uid)
-        edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_menu_kb())
-    elif data.startswith("he:"):
-        on_hack_eq_buy(uid, chat_id, mid, data[3:])
-    elif data == "hec":
-        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_eq_kb())
-    elif data.startswith("ah:"):
-        on_anti_hack_buy(uid, chat_id, mid, data[3:])
-    elif data == "ahc":
-        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", anti_hack_kb())
-    elif data.startswith("hk:"):
-        on_hack_group_buy(uid, chat_id, mid, data[3:])
-    elif data == "hkc":
-        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_group_kb())
-    elif data.startswith("wr:"):
-        on_worker_rent_buy(uid, chat_id, mid, int(data[3:]))
-    elif data == "wp":
-        on_worker_perm_buy(uid, chat_id, mid)
-    elif data == "wrc":
-        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb())
-    elif data.startswith("hb:"):
-        on_house_buy(uid, chat_id, mid, data[3:])
-    elif data == "hbc":
-        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", house_kb())
-    elif data.startswith("fd:"):
-        on_food_buy(uid, chat_id, mid, int(data[3:]))
-    elif data == "fdc":
-        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
-        send_message(chat_id, "از منوی زیر استفاده کنید.", build_kb())
+            send_message(chat_id, "*ادمین گرامی⚠️*\n\nچاپ پول حذف شد!✔️", admin_panel_kb()); return
+        if step == "gift_force_uid":
+            set_pending(uid, "gift_force_section", target=target)
+            send_message(chat_id, "*ادمین گرامی⚠️*\n\nبخش را انتخاب کنید!✔️",
+                RK([["خرید تجهیزات اقتصادی💰💵💵💰", "خرید تجهیزات دفاعی🛡", "خرید تجهیزات جنگی🧨💣"],
+                    ["گروهک های هکری👨‍💻", "ساخت و ساز⚙🛠"], ["🔙 بازگشت"]])); return
+
+    # سایر استپ‌های اهدا نیرو در صورت نیاز از on_message ادمین هندل می‌شوند
 
 
-def on_callback(cb):
-    frm = cb.get("from") or {}
-    uid = frm.get("id")
-    msg = cb.get("message") or {}
-    chat = msg.get("chat") or {}
-    # فقط چت خصوصی — کانال و گروه نادیده گرفته می‌شوند
-    if chat.get("type") and chat.get("type") != "private":
-        if cb.get("id"):
-            api("answerCallbackQuery", callback_query_id=cb["id"])
-        return
-    chat_id = chat.get("id")
-    mid = msg.get("message_id")
-    data = cb.get("data") or ""
-    if cb.get("id"):
-        api("answerCallbackQuery", callback_query_id=cb["id"])
-    if uid is None or chat_id is None or mid is None:
-        return
-    # مسدود / خاموش — کال‌بک هم جواب نده (ادمین مستثنی)
-    if is_user_blocked(uid) and not is_admin(uid):
-        return
-    if not is_bot_on() and not is_admin(uid):
-        return
-    try:
-        route_callback(uid, chat_id, mid, data)
-    except Exception as e:
-        print("[CB ERROR]", data, e)
 
-# ───────────────────────────── مسیریابی پیام‌های متنی (دکمه اصلی) ─────────────────────────────
+
 def on_message(msg):
     chat = msg.get("chat") or {}
-    # فقط پیام‌های خصوصی — کانال / گروه / سوپرگروه کاملاً نادیده
     if chat.get("type") != "private":
         return
     frm = msg.get("from") or {}
@@ -3118,17 +2431,11 @@ def on_message(msg):
     text = (msg.get("text") or "").strip()
     get_user(uid)
 
-    # مسدود کامل — هیچ جوابی
     if is_user_blocked(uid) and not is_admin(uid):
         return
-
-    # ربات خاموش — فقط ادمین
     if not is_bot_on() and not is_admin(uid):
-        send_message(chat_id,
-            "*کاربر گرامی⚠️*\n\nربات در حال حاضر خاموش است!✖️\n\nلطفا منتظر بمانید!📌")
+        send_message(chat_id, "*کاربر گرامی⚠️*\n\nربات در حال حاضر خاموش است!✖️\n\nلطفا منتظر بمانید!📌")
         return
-
-    # اسپم: ۷ کلیک در ۵ ثانیه — نادیده (ادمین معاف)
     if text and check_spam(uid):
         return
 
@@ -3139,41 +2446,30 @@ def on_message(msg):
         send_message(chat_id, WELCOME, main_menu_kb(uid))
         return
 
-    # عضویت اجباری (غیر ادمین)
     if not is_admin(uid) and missing_force_channels(uid):
-        if text != "🔙 بازگشت":
-            require_force_join(uid, chat_id)
-            return
+        require_force_join(uid, chat_id)
+        return
 
-    # روشن/خاموش — اولویت بالا (فقط ادمین)
     if is_admin(uid) and text:
         _tn = text.replace("\ufe0f", "").replace("\u200c", "").strip()
         if "روشن کردن ربات" in text or "روشن کردن ربات" in _tn:
             if is_bot_on():
-                send_message(chat_id,
-                    "*ادمین گرامی⚠️*\n\nربات در حال حاضر روشن است!✔️\n\nنیازی به روشن کردن مجدد ربات نیست!📌",
-                    admin_panel_kb(uid))
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nربات روشن است!✔️", admin_panel_kb(uid))
             else:
                 DATA["bot_on"] = True
                 save_data()
-                send_message(chat_id,
-                    "*ادمین گرامی⚠️*\n\nربات با موفقیت روشن شد!✔️\n\nممنون از شما!📌",
-                    admin_panel_kb(uid))
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nربات روشن شد!✔️", admin_panel_kb(uid))
             return
         if "خاموش کردن ربات" in text or "خاموش کردن ربات" in _tn:
             if not is_bot_on():
-                send_message(chat_id,
-                    "*ادمین گرامی⚠️*\n\nربات در حال حاضر خاموش است!✔️\n\nنیازی به خاموش کردن مجدد ربات نیست!📌",
-                    admin_panel_kb(uid))
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nربات خاموش است!✔️", admin_panel_kb(uid))
             else:
                 DATA["bot_on"] = False
                 save_data()
-                send_message(chat_id,
-                    "*ادمین گرامی⚠️*\n\nربات با موفقیت خاموش شد!✔️\n\nممنون از شما!📌",
-                    admin_panel_kb(uid))
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nربات خاموش شد!✔️", admin_panel_kb(uid))
             return
 
-    # ورودی متنی ادمین (آیدی عددی)
+    # ورودی متنی ادمین
     if is_admin(uid) and uid in PENDING:
         pend = get_pending(uid)
         if pend and pend.get("step") in (
@@ -3181,11 +2477,10 @@ def on_message(msg):
             "gift_dia_uid", "deduct_dia_uid", "gift_dia_amt", "deduct_dia_amt",
             "gift_coin_uid", "deduct_coin_uid", "gift_coin_amt", "deduct_coin_amt",
             "gift_oil_uid", "gift_oil_amt",
-            "gift_force_uid", "gift_force_section",
-            "gift_force_cat", "gift_force_item", "gift_force_qty",
+            "gift_force_uid", "gift_force_section", "gift_force_cat", "gift_force_item", "gift_force_qty",
             "gift_force_eco", "gift_force_def",
-            "gift_force_hack_menu", "gift_force_hack_eq", "gift_force_hack_anti", "gift_force_hack_grp",
-            "warn_uid", "unwarn_uid", "block_uid", "unblock_uid", "search_uid",
+            "warn_uid", "unwarn_uid", "block_uid", "unblock_uid",
+            "gift_atom_uid", "gift_anti_atom_uid",
             "btn_create_name", "btn_create_text", "btn_edit_text",
         ):
             admin_text_input(uid, chat_id, text)
@@ -3193,142 +2488,58 @@ def on_message(msg):
         if pend and pend.get("step") == "ap_level":
             target = pend.get("target")
             if text in ("سطح ۱ 🎁", "سطح ۱", "1"):
-                on_set_printer(1, target)
-                clear_pending(uid)
-                return
+                on_set_printer(1, target); clear_pending(uid); return
             if text in ("سطح ۲ 🎁", "سطح ۲", "2"):
-                on_set_printer(2, target)
-                clear_pending(uid)
-                return
+                on_set_printer(2, target); clear_pending(uid); return
             if text in ("سطح ۳ 🎁", "سطح ۳", "3"):
-                on_set_printer(3, target)
-                clear_pending(uid)
-                return
+                on_set_printer(3, target); clear_pending(uid); return
             if text == "🔙 بازگشت":
                 clear_pending(uid)
-                send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb())
-                return
+                send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb(uid)); return
 
     pend = get_pending(uid)
 
-    # پشتیبانی / پاسخ ادمین — حتی پیام بدون متن (عکس/ویس/...)
-    if pend and pend.get("step") == "support_wait":
+    # جستجوی کاربر با انتخاب کشور — قبل از کشورگیری
+    if is_admin(uid) and pend and pend.get("step") == "search_country":
         if text == "🔙 بازگشت":
             clear_pending(uid)
-            send_message(chat_id, "به منوی اصلی بازگشتید.", main_menu_kb(uid)); return
-        deliver_support_to_admins(uid, chat_id, msg)
+            send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb(uid)); return
+        found = find_country_by_label(text)
+        if not found:
+            send_message(chat_id, UNKNOWN_TEXT); return
+        _, flag, en, name, vip = found
+        c = DATA["countries"].get(en)
+        if not isinstance(c, dict) or not c.get("owner"):
+            send_message(chat_id, "*ادمین گرامی⚠️*\n\nاین کشور مالک ندارد!✔️", admin_panel_kb(uid)); return
         clear_pending(uid)
-        send_message(chat_id,
-            "*کاربر گرامی⚠️*\n\nپیام شما برای پشتیبانی ارسال گشت!✔️\n\nپشتیبانی به زودی جواب شما را خواهد داد!📌",
-            main_menu_kb(uid))
-        return
-    if is_admin(uid) and pend and pend.get("step") == "admin_reply":
-        target = pend.get("target")
-        if text == "🔙 بازگشت":
-            clear_pending(uid)
-            send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb()); return
-        try:
-            if msg.get("text"):
-                send_message(target, msg.get("text"), md=False)
-            elif msg.get("photo"):
-                api("sendPhoto", chat_id=target, photo=msg["photo"][-1]["file_id"], caption=msg.get("caption") or "")
-            elif msg.get("video"):
-                api("sendVideo", chat_id=target, video=msg["video"]["file_id"], caption=msg.get("caption") or "")
-            elif msg.get("voice"):
-                api("sendVoice", chat_id=target, voice=msg["voice"]["file_id"])
-            elif msg.get("audio"):
-                api("sendAudio", chat_id=target, audio=msg["audio"]["file_id"])
-            elif msg.get("document"):
-                api("sendDocument", chat_id=target, document=msg["document"]["file_id"], caption=msg.get("caption") or "")
-            elif msg.get("animation"):
-                api("sendAnimation", chat_id=target, animation=msg["animation"]["file_id"])
-            else:
-                api("forwardMessage", chat_id=target, from_chat_id=chat_id, message_id=msg.get("message_id"))
-            clear_pending(uid)
-            send_message(chat_id,
-                "*ادمین گرامی⚠️*\n\nپیام شما با موفقیت برای کاربر ارسال شد!✔️\n\nاز زحمات شما سپاسگزاریم!📌",
-                admin_panel_kb())
-        except Exception as e:
-            print("[ADMIN REPLY]", e)
-            send_message(chat_id, "ارسال ناموفق بود.", admin_panel_kb())
+        send_message(chat_id, equipment_status_text(c["owner"]), admin_panel_kb(uid)); return
+
+    # انتخاب کشور (پرچم / تیک)
+    flags = ("🇺🇳","🇺🇸","🇨🇳","🇷🇺","🇮🇳","🇬🇧","🇫🇷","🇩🇪","🇰🇵","🇯🇵","🇰🇷","🇹🇷","🇮🇹","🇧🇷","🇨🇦","🇦🇺","🇮🇱","🇪🇸","🇸🇦","🇮🇷","🇵🇰","🇮🇩","🇲🇽","🇳🇱","🇵🇱","🇸🇪","🇳🇴","🇿🇦","🇪🇬","🇦🇪","🇸🇬","🇨🇭","🇺🇦","🇻🇳","🇹🇭","🇦🇷","🇲🇾","🇾🇪","✅️","✅")
+    if text.startswith(flags) or any(text.startswith(f) for f in flags):
+        if pend and pend.get("step") == "admin_gift_select":
+            handle_admin_gift_country(uid, chat_id, text); return
+        if pend and pend.get("step") == "admin_rm_select":
+            handle_admin_remove_manager(uid, chat_id, text); return
+        # search already handled above
+        handle_country_select(uid, chat_id, text)
         return
 
-    # ── منوی اصلی ──
-    if text == "کشورگیری🏳🏴":
-        clear_pending(uid)
-        send_message(chat_id, COUNTRY_TEXT, country_kb())
-        return
-    if text == "تجهیزات🚀":
-        clear_pending(uid)
-        send_message(chat_id, equipment_status_text(uid), main_menu_kb(uid))
-        return
-    if text == "خرید تجهیزات🔫💣":
-        clear_pending(uid)
-        send_message(chat_id, SHOP_TEXT, shop_kb())
-        return
     if text == "⚙️ پنل ادمین" and is_admin(uid):
         clear_pending(uid)
-        send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb(uid))
-        return
+        send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb(uid)); return
+    if text == "کشورگیری🏳🏴":
+        clear_pending(uid)
+        send_message(chat_id, COUNTRY_TEXT, country_kb()); return
+    if text == "تجهیزات🚀":
+        clear_pending(uid)
+        send_message(chat_id, equipment_status_text(uid), main_menu_kb(uid)); return
+    if text == "خرید تجهیزات🔫💣":
+        clear_pending(uid)
+        send_message(chat_id, "*کاربر گرامی⚠️*\n\nتجهیزات مورد نظر را انتخاب کنید!✔️", shop_kb()); return
     if text == "🔙 بازگشت":
-        # بسته به وضعیت فعلی
-        if pend:
-            step = pend.get("step")
-            if step in ("confirm_country",):
-                clear_pending(uid)
-                send_message(chat_id, COUNTRY_TEXT, country_kb())
-                return
-            if step == "war_cat":
-                clear_pending(uid)
-                send_message(chat_id, WAR_TEXT, war_kb())
-                return
-            if step in ("eco_buy", "def_buy", "war_buy"):
-                # لغو از طریق دکمه شیشه‌ای انجام می‌شود؛ اینجا فقط بازگشت کلی
-                clear_pending(uid)
-        send_message(chat_id, "به منوی اصلی بازگشتید.", main_menu_kb(uid))
-        return
-
-    # ── پنل ادمین ──
-    if is_admin(uid):
-        if text == "➕️ اهدا کشور":
-            set_pending(uid, "admin_gift_select")
-            send_message(chat_id, GIFT_SELECT_TEXT, country_kb())
-            return
-        if text == "➖️ حذف مدیر کشور":
-            set_pending(uid, "admin_rm_select")
-            send_message(chat_id, RM_SELECT_TEXT, country_kb())
-            return
-        if text == "➕️ افزودن دستگاه چاپ پول":
-            set_pending(uid, "ap")
-            send_message(chat_id, ASK_UID_ADMIN, RK([["🔙 بازگشت"]]))
-            return
-        if text == "➖️ حذف دستگاه چاپ پول":
-            set_pending(uid, "dp")
-            send_message(chat_id, ASK_UID_ADMIN, RK([["🔙 بازگشت"]]))
-            return
-
-        if pend and pend.get("step") == "admin_gift_select":
-            handle_admin_gift_country(uid, chat_id, text)
-            return
-        if pend and pend.get("step") == "admin_rm_select":
-            handle_admin_remove_manager(uid, chat_id, text)
-            return
-
-    # ── کشورگیری (انتخاب کشور با دکمه اصلی) ──
-    if text.startswith("🇺🇳") or text.startswith("🇺🇸") or text.startswith("🇨🇳") or text.startswith("🇷🇺") or text.startswith("🇮🇳") or \
-       text.startswith("🇬🇧") or text.startswith("🇫🇷") or text.startswith("🇩🇪") or text.startswith("🇰🇵") or \
-       text.startswith("🇯🇵") or text.startswith("🇰🇷") or text.startswith("🇹🇷") or text.startswith("🇮🇹") or \
-       text.startswith("🇧🇷") or text.startswith("🇨🇦") or text.startswith("🇦🇺") or text.startswith("🇮🇱") or \
-       text.startswith("🇪🇸") or text.startswith("🇸🇦") or text.startswith("🇮🇷") or text.startswith("🇵🇰") or \
-       text.startswith("🇮🇩") or text.startswith("🇲🇽") or text.startswith("🇳🇱") or text.startswith("🇵🇱") or \
-       text.startswith("🇸🇪") or text.startswith("🇳🇴") or text.startswith("🇿🇦") or text.startswith("🇪🇬") or \
-       text.startswith("🇦🇪") or text.startswith("🇸🇬") or text.startswith("🇨🇭") or text.startswith("🇺🇦") or \
-       text.startswith("🇻🇳") or text.startswith("🇹🇭") or text.startswith("🇦🇷") or text.startswith("🇲🇾") or \
-       text.startswith("🇾🇪") or text.startswith("✅️"):
-        # اگر در حالت انتخاب برای اهدا/حذف ادمین هستیم، قبلاً هندل شده
-        if not (pend and pend.get("step") in ("admin_gift_select", "admin_rm_select")):
-            handle_country_select(uid, chat_id, text)
-            return
+        clear_pending(uid)
+        send_message(chat_id, "به منوی اصلی بازگشتید.", main_menu_kb(uid)); return
 
     # ── فروشگاه ──
     if text == "خرید تجهیزات اقتصادی💰💵💵💰":
@@ -3390,6 +2601,17 @@ def on_message(msg):
         if text == "🔙 بازگشت":
             clear_pending(uid)
             send_message(chat_id, "به منوی اصلی بازگشتید.", main_menu_kb(uid)); return
+        if text == "💣 اتم" or text.startswith("💣 اتم"):
+            have = int((u.get("equipment") or {}).get("atom", 0) or 0)
+            if have <= 0:
+                send_message(chat_id, "*کاربر گرامی⚠️*\n\nاتم ندارید!✔️", attack_force_kb(u, force)); return
+            if force.get("atom"):
+                send_message(chat_id, "*کاربر گرامی⚠️*\n\nاتم را یک‌بار انتخاب کرده‌اید!✔️", attack_force_kb(u, force)); return
+            force["atom"] = 1
+            set_pending(uid, "battle_force", target=target_en, force=force)
+            send_message(chat_id,
+                "*کاربر گرامی⚠️*\n\nاتم برای حمله آماده شد!✔️\n\nدفاع عادی دشمن بی‌اثر است — فقط ضداتم جلوی آن را می‌گیرد!📌",
+                attack_force_kb(u, force)); return
         if text == "حمله🚀":
             if not force:
                 send_message(chat_id, "*کاربر گرامی⚠️*\n\nابتدا نیرو انتخاب کنید!✔️", attack_force_kb(u, force)); return
@@ -3871,6 +3093,21 @@ def on_message(msg):
             send_message(chat_id, "ارسال ناموفق بود.", admin_panel_kb())
         return
 
+
+    if is_admin(uid) and pend and pend.get("step") == "search_country":
+        if text == "🔙 بازگشت":
+            clear_pending(uid)
+            send_message(chat_id, ADMIN_PANEL_TEXT, admin_panel_kb(uid)); return
+        found = find_country_by_label(text)
+        if not found:
+            send_message(chat_id, UNKNOWN_TEXT); return
+        _, flag, en, name, vip = found
+        c = DATA["countries"].get(en)
+        if not isinstance(c, dict) or not c.get("owner"):
+            send_message(chat_id, "*ادمین گرامی⚠️*\n\nاین کشور مالک ندارد!✔️"); return
+        clear_pending(uid)
+        send_message(chat_id, equipment_status_text(c["owner"]), admin_panel_kb(uid)); return
+
     # اولویت: ویرایش/حذف دکمه قبل از نمایش متن دکمه سفارشی
     if is_admin(uid) and pend and pend.get("step") == "btn_edit_pick":
         if text == "🔙 بازگشت":
@@ -3930,9 +3167,31 @@ def on_message(msg):
         if text == "🚫 رفع مسدودی":
             set_pending(uid, "unblock_uid")
             send_message(chat_id, ASK_UID_ADMIN, RK([["🔙 بازگشت"]])); return
-        if text == "🔎 جست و جوی کاربر":
-            set_pending(uid, "search_uid")
+        if text == "💣 اهدا اتم":
+            set_pending(uid, "gift_atom_uid")
             send_message(chat_id, ASK_UID_ADMIN, RK([["🔙 بازگشت"]])); return
+        if text == "💣 اهدا ضد اتم":
+            set_pending(uid, "gift_anti_atom_uid")
+            send_message(chat_id, ASK_UID_ADMIN, RK([["🔙 بازگشت"]])); return
+        if text == "🔎 جست و جوی کاربر":
+            set_pending(uid, "search_country")
+            rows = []
+            row = []
+            for flag, en, name, vip in COUNTRIES:
+                c = DATA["countries"].get(en)
+                if isinstance(c, dict) and c.get("owner"):
+                    row.append(f"{flag} {name}")
+                    if len(row) == 2:
+                        rows.append(row)
+                        row = []
+            if row:
+                rows.append(row)
+            if not rows:
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nکشوری با مالک وجود ندارد!✔️", admin_panel_kb(uid)); clear_pending(uid); return
+            rows.append(["🔙 بازگشت"])
+            send_message(chat_id,
+                "*ادمین گرامی⚠️*\n\nکشور مورد نظر را انتخاب نمایید!✔️\n\nاز منوی زیر استفاده کنید!📌",
+                RK(rows)); return
         if text == "🧑‍🔧 ساخت دکمه":
             set_pending(uid, "btn_create_name")
             send_message(chat_id,
@@ -4035,6 +3294,131 @@ def on_message(msg):
 
     send_message(chat_id, UNKNOWN_TEXT, main_menu_kb(uid))
 
+
+
+
+def route_callback(uid, chat_id, mid, data):
+    if data.startswith("cy"):
+        on_country_confirm(uid, chat_id, mid, int(data[2:])); return
+    if data == "cx":
+        clear_pending(uid)
+        edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "به لیست کشورها بازگشتید.", country_kb()); return
+    if data.startswith("eb"):
+        on_eco_buy(uid, chat_id, mid, int(data[2:])); return
+    if data == "se":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", eco_kb()); return
+    if data.startswith("db"):
+        on_def_buy(uid, chat_id, mid, int(data[2:])); return
+    if data == "sd":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", def_kb()); return
+    if data.startswith("wb:"):
+        _, key, idx = data.split(":")
+        on_war_buy(uid, chat_id, mid, key, int(idx)); return
+    if data.startswith("wc"):
+        key = data[2:]
+        clear_pending(uid)
+        set_pending(uid, "war_cat", key=key)
+        edit_message(chat_id, mid, CANCEL_TEXT)
+        cat = WAR_CAT_MAP.get(key)
+        phrase = cat["phrase"] if cat else "تجهیزات"
+        send_message(chat_id, f"*کاربر گرامی⚠️*\n\n{phrase}!✔️\n\nاز منوی زیر استفاده کنید!📌", war_items_kb(key)); return
+    if data == "fjok":
+        miss = missing_force_channels(uid)
+        if miss:
+            extra = "\n".join(f"• {ch['btn']} ({ch['user']})" for ch in miss)
+            msg = "*کاربر گرامی⚠️*\n\nهنوز در همه کانال‌ها عضو نشده‌اید!✖️\n\n" + extra
+            try:
+                edit_message(chat_id, mid, msg)
+            except Exception:
+                pass
+            send_message(chat_id, msg, force_join_kb())
+        else:
+            clear_pending(uid)
+            try:
+                edit_message(chat_id, mid, "*کاربر گرامی⚠️*\n\nعضویت شما تأیید شد!✔️")
+            except Exception:
+                pass
+            send_message(chat_id, WELCOME, main_menu_kb(uid))
+        return
+    if data.startswith("sup:"):
+        target = int(data[4:])
+        clear_pending(uid)
+        set_pending(uid, "admin_reply", target=target)
+        send_message(chat_id, "*ادمین گرامی⚠️*\n\nپیام خود را برای کاربر ارسال نمایید!✔️", RK([["🔙 بازگشت"]])); return
+    if data.startswith("ha:"):
+        ok, msg = do_hack_attack(uid, data[3:])
+        clear_pending(uid)
+        edit_message(chat_id, mid, msg)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_menu_kb()); return
+    if data == "hac":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_menu_kb()); return
+    if data.startswith("he:"):
+        on_hack_eq_buy(uid, chat_id, mid, data[3:]); return
+    if data == "hec":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_eq_kb()); return
+    if data.startswith("ah:"):
+        on_anti_hack_buy(uid, chat_id, mid, data[3:]); return
+    if data == "ahc":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", anti_hack_kb()); return
+    if data.startswith("hk:"):
+        on_hack_group_buy(uid, chat_id, mid, data[3:]); return
+    if data == "hkc":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", hack_group_kb()); return
+    if data.startswith("wr:"):
+        on_worker_rent_buy(uid, chat_id, mid, int(data[3:])); return
+    if data == "wp":
+        on_worker_perm_buy(uid, chat_id, mid); return
+    if data == "wrc":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb()); return
+    if data.startswith("hb:"):
+        on_house_buy(uid, chat_id, mid, data[3:]); return
+    if data == "hbc":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", house_kb()); return
+    if data.startswith("fd:"):
+        on_food_buy(uid, chat_id, mid, int(data[3:])); return
+    if data == "fdc":
+        clear_pending(uid); edit_message(chat_id, mid, CANCEL_TEXT)
+        send_message(chat_id, "از منوی زیر استفاده کنید.", build_kb()); return
+
+
+def on_callback(cb):
+    frm = cb.get("from") or {}
+    uid = frm.get("id")
+    msg = cb.get("message") or {}
+    chat = msg.get("chat") or {}
+    if chat.get("type") and chat.get("type") != "private":
+        if cb.get("id"):
+            api("answerCallbackQuery", callback_query_id=cb["id"])
+        return
+    chat_id = chat.get("id")
+    mid = msg.get("message_id")
+    data = cb.get("data") or ""
+    if cb.get("id"):
+        api("answerCallbackQuery", callback_query_id=cb["id"])
+    if uid is None or chat_id is None or mid is None:
+        return
+    if is_user_blocked(uid) and not is_admin(uid):
+        return
+    if not is_bot_on() and not is_admin(uid):
+        return
+    if not is_admin(uid) and data != "fjok" and missing_force_channels(uid):
+        return
+    try:
+        route_callback(uid, chat_id, mid, data)
+    except Exception as e:
+        print("[CB ERROR]", data, e)
+
+
+
 def handle_update(upd):
     # فقط پیام و کال‌بک چت خصوصی — channel_post و گروه نادیده
     if upd.get("callback_query"):
@@ -4042,6 +3426,374 @@ def handle_update(upd):
     elif upd.get("message"):
         on_message(upd["message"])
     # channel_post / edited_channel_post / ... → هیچ واکنشی نده
+
+
+# ───────────────────────────── خرید و سود ─────────────────────────────
+
+def calc_user_daily_income(u):
+    income = 0
+    eq = u.get("equipment") or {}
+    for eco in ECO_ITEMS:
+        cnt = eq.get(eco["id"], 0) or 0
+        income += int(eco.get("profit") or 0) * int(cnt)
+    lvl = int(u.get("printer") or 0)
+    if lvl in PRINTER_INCOME:
+        income += PRINTER_INCOME[lvl]
+    oil_gain = int(eq.get("eco6", 0) or 0) * OIL_PER_FIELD
+    return income, oil_gain
+
+
+def distribute_profits():
+    today = datetime.now(TEHRAN_TZ).date().isoformat()
+    last = DATA.get("last_payout")
+    if last == today:
+        return
+    print(f"[PROFIT] پرداخت (last={last} today={today})...")
+    n = 0
+    with LOCK:
+        for uid, u in list(DATA.get("users", {}).items()):
+            if u.get("banned") or u.get("blocked"):
+                continue
+            if is_hacked(u):
+                continue
+            income, oil_gain = calc_user_daily_income(u)
+            if income <= 0 and oil_gain <= 0:
+                continue
+            u["coins"] = int(u.get("coins") or 0) + income
+            u["oil"] = int(u.get("oil") or 0) + oil_gain
+            n += 1
+            if NOTIFY_PROFIT and (income > 0 or oil_gain > 0):
+                try:
+                    msg = "*کاربر گرامی⚠️*\n\nسود روزانه شما واریز شد!✔️\n\n"
+                    if income > 0:
+                        msg += f"💰 سکه: {coins_fa(income)}\n"
+                    if oil_gain > 0:
+                        msg += f"🛢 نفت: {fad(oil_gain)} بشکه\n"
+                    msg += "\nاز تجهیزات خود استفاده کنید!📌"
+                    send_message(int(uid), msg)
+                except Exception:
+                    pass
+        DATA["last_payout"] = today
+        save_data()
+    print(f"[PROFIT] پرداخت به {n} کاربر")
+
+
+def profit_worker():
+    while True:
+        try:
+            now = datetime.now(TEHRAN_TZ)
+            # هر شب بعد از 00:00
+            distribute_profits()
+            # خواب تا حدود نیمه‌شب بعدی
+            tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=5, microsecond=0)
+            wait = max(30, (tomorrow - now).total_seconds())
+            print(f"[PROFIT] خواب {int(wait)}s")
+            time.sleep(min(wait, 3600))
+        except Exception as e:
+            print("[PROFIT ERR]", e)
+            time.sleep(60)
+
+
+def handle_eco_select(uid, chat_id, text):
+    u = get_user(uid)
+    if not u.get("country"):
+        send_message(chat_id, NEED_COUNTRY_TEXT, main_menu_kb(uid)); return
+    if is_hacked(u):
+        send_message(chat_id, HACKED_TEXT, main_menu_kb(uid)); return
+    # چاپ پول
+    for lvl in (1, 2, 3):
+        if text == f"دستگاه چاپ پول سطح {LVL_FA[lvl]}" or text == f"دستگاه چاپ پول سطح {lvl}":
+            send_message(chat_id, "*کاربر گرامی⚠️*\n\nچاپ پول فقط از پنل ادمین اهدا می‌شود!✔️", eco_kb()); return
+    for i, it in enumerate(ECO_ITEMS):
+        if text == it["btn"]:
+            set_pending(uid, "eco_buy", idx=i)
+            msg = (
+                f"*{it['title']}*\n"
+                f"{it['price_t']}\n"
+                f"{it['profit_t']}"
+            )
+            if it.get("oil_t"):
+                msg += f"\n{it['oil_t']}"
+            msg += "\n\nآیا مایل به خرید هستید؟"
+            kb = {"inline_keyboard": IK([[("✅ تأیید", f"eb{i}"), ("❌ لغو", "se")]])}
+            send_message(chat_id, msg, kb); return
+    send_message(chat_id, UNKNOWN_TEXT, eco_kb())
+
+
+def on_eco_buy(uid, chat_id, mid, idx):
+    if idx < 0 or idx >= len(ECO_ITEMS):
+        return
+    it = ECO_ITEMS[idx]
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    price = int(it["price"])
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), u.get("diamonds"))); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        eq = u.setdefault("equipment", {})
+        eq[it["id"]] = int(eq.get(it["id"], 0) or 0) + 1
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\n{it['btn']} خریداری شد!✔️")
+    send_message(chat_id, "*کاربر گرامی⚠️*\n\nاز منوی زیر استفاده کنید!📌", eco_kb())
+
+
+def handle_def_select(uid, chat_id, text):
+    u = get_user(uid)
+    if not u.get("country"):
+        send_message(chat_id, NEED_COUNTRY_TEXT, main_menu_kb(uid)); return
+    if text == "🛡پدافند ضد بمب اتم":
+        send_message(chat_id, "*کاربر گرامی⚠️*\n\nضداتم فقط از پنل ادمین اهدا می‌شود!✔️", def_kb()); return
+    for i, it in enumerate(DEF_ITEMS):
+        if text == it["btn"]:
+            set_pending(uid, "def_buy", idx=i)
+            msg = f"*{it['btn']}*\n💸 قیمت: {it['pt']}\n⚡ قدرت: {fad(it['power'])}\n\nآیا مایل به خرید هستید؟"
+            kb = {"inline_keyboard": IK([[("✅ تأیید", f"db{i}"), ("❌ لغو", "sd")]])}
+            send_message(chat_id, msg, kb); return
+    send_message(chat_id, UNKNOWN_TEXT, def_kb())
+
+
+def on_def_buy(uid, chat_id, mid, idx):
+    if idx < 0 or idx >= len(DEF_ITEMS):
+        return
+    it = DEF_ITEMS[idx]
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    price = int(it["price"])
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        eq = u.setdefault("equipment", {})
+        eq[it["id"]] = int(eq.get(it["id"], 0) or 0) + 1
+        ensure_def_hp(u)
+        u.setdefault("def_hp", {})[it["id"]] = int(u.get("def_hp", {}).get(it["id"], 0) or 0) + int(it["power"])
+        # قدرت کشور
+        en = u.get("country")
+        c = DATA["countries"].get(en)
+        if isinstance(c, dict):
+            c["power"] = int(c.get("power") or BASE_COUNTRY_POWER) + int(it["power"])
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\n{it['btn']} خریداری شد!✔️")
+    send_message(chat_id, "*کاربر گرامی⚠️*\n\nاز منوی زیر استفاده کنید!📌", def_kb())
+
+
+def handle_war_cat_select(uid, chat_id, text):
+    for c in WAR_CATS:
+        if text == c["btn"]:
+            set_pending(uid, "war_cat", key=c["key"])
+            send_message(chat_id, f"*کاربر گرامی⚠️*\n\n{c['phrase']}!✔️\n\nاز منوی زیر استفاده کنید!📌", war_items_kb(c["key"]))
+            return
+
+
+def handle_war_item_select(uid, chat_id, text, key=None):
+    u = get_user(uid)
+    if not u.get("country"):
+        send_message(chat_id, NEED_COUNTRY_TEXT, main_menu_kb(uid)); return
+    if key is None and (get_pending(uid) or {}).get("step") == "war_cat":
+        key = (get_pending(uid) or {}).get("key")
+    cat = WAR_CAT_MAP.get(key) if key else None
+    if not cat:
+        for c in WAR_CATS:
+            for it in c["items"]:
+                if text == _war_btn_label(it["name"]) or text == it["name"]:
+                    key = c["key"]
+                    cat = c
+                    break
+    if not cat:
+        send_message(chat_id, UNKNOWN_TEXT, war_kb()); return
+    for idx, it in enumerate(cat["items"]):
+        if text == _war_btn_label(it["name"]) or text == it["name"]:
+            set_pending(uid, "war_buy", key=key, idx=idx)
+            dia = int(it.get("diamonds") or 0)
+            msg = (
+                f"{it['name']}\n"
+                f"💸 قیمت کل: {coins_fa(it['price'])} سکه"
+                + (f" + {fad(dia)} الماس" if dia else "")
+                + f"\nقدرت تخریب: {fad(it['power'])}\n\nآیا مایل به خرید هستید؟"
+            )
+            kb = {"inline_keyboard": IK([[("✅ تأیید", f"wb:{key}:{idx}"), ("❌ لغو", f"wc{key}")]])}
+            send_message(chat_id, msg, kb); return
+    send_message(chat_id, UNKNOWN_TEXT, war_items_kb(key))
+
+
+def on_war_buy(uid, chat_id, mid, key, idx):
+    cat = WAR_CAT_MAP.get(key)
+    if not cat or idx < 0 or idx >= len(cat["items"]):
+        return
+    it = cat["items"][idx]
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    price = int(it["price"])
+    dia = int(it.get("diamonds") or 0)
+    if int(u.get("coins") or 0) < price or int(u.get("diamonds") or 0) < dia:
+        edit_message(chat_id, mid, insufficient_msg(price, dia, u.get("coins"), u.get("diamonds"))); return
+    eq_id = f"{key}_{idx + 1}"
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        u["diamonds"] = int(u.get("diamonds") or 0) - dia
+        eq = u.setdefault("equipment", {})
+        eq[eq_id] = int(eq.get(eq_id, 0) or 0) + 1
+        save_data()
+    clear_pending(uid)
+    set_pending(uid, "war_cat", key=key)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\nخرید انجام شد!✔️")
+    send_message(chat_id, f"*کاربر گرامی⚠️*\n\n{cat['phrase']}!✔️\n\nاز منوی زیر استفاده کنید!📌", war_items_kb(key))
+
+
+def on_hack_eq_buy(uid, chat_id, mid, kind):
+    # kind: hq, pc, comm, sat
+    prices = {"hq": 50_000_000, "pc": 40_000_000, "comm": 60_000_000, "sat": 80_000_000}
+    names = {"hq": "مقر", "pc": "کامپیوتر", "comm": "مرکز ارتباطات", "sat": "ماهواره"}
+    price = prices.get(kind)
+    if not price:
+        return
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        u[kind] = int(u.get(kind) or 0) + 1
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\n{names.get(kind, kind)} خریداری شد!✔️")
+    send_message(chat_id, "از منوی زیر استفاده کنید.", hack_eq_kb())
+
+
+def on_anti_hack_buy(uid, chat_id, mid, gid):
+    it = ANTI_HACK_MAP.get(gid)
+    if not it:
+        return
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    if not can_hack_ops(u):
+        edit_message(chat_id, mid, hack_eq_missing_text(u)); return
+    price = int(it.get("price") or 0)
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        ah = u.setdefault("antihackers", {})
+        ah[gid] = int(ah.get(gid, 0) or 0) + 1
+        consume_hack_stack(u, 50)
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\n{it.get('btn', gid)} خریداری شد!✔️")
+    send_message(chat_id, "از منوی زیر استفاده کنید.", anti_hack_kb())
+
+
+def on_hack_group_buy(uid, chat_id, mid, gid):
+    it = HACK_GROUP_MAP.get(gid)
+    if not it:
+        return
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    if not can_hack_ops(u):
+        edit_message(chat_id, mid, hack_eq_missing_text(u)); return
+    price = int(it.get("price") or 0)
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        hk = u.setdefault("hackers", {})
+        hk[gid] = int(hk.get(gid, 0) or 0) + 1
+        consume_hack_stack(u, 50)
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\n{it.get('btn', gid)} خریداری شد!✔️")
+    send_message(chat_id, "از منوی زیر استفاده کنید.", hack_group_kb())
+
+
+def on_worker_rent_buy(uid, chat_id, mid, days):
+    prices = {1: 20_000_000, 3: 50_000_000, 7: 100_000_000}
+    workers = {1: 10, 3: 30, 7: 70}
+    price = prices.get(days)
+    if price is None:
+        return
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        u.setdefault("workers_temp", []).append({"n": workers[days], "until": time.time() + days * 86400})
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\nکارگر موقت {fad(days)} روزه خریداری شد!✔️")
+    send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb())
+
+
+def on_worker_perm_buy(uid, chat_id, mid):
+    price = 150_000_000
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        u["workers_perm"] = int(u.get("workers_perm") or 0) + 10
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, "*کاربر گرامی⚠️*\n\n۱۰ کارگر دائم خریداری شد!✔️")
+    send_message(chat_id, "از منوی زیر استفاده کنید.", worker_kb())
+
+
+def on_house_buy(uid, chat_id, mid, hid):
+    it = None
+    for h in HOUSE_ITEMS:
+        if h["id"] == hid:
+            it = h
+            break
+    if not it:
+        return
+    u = get_user(uid)
+    if not u.get("country"):
+        edit_message(chat_id, mid, NEED_COUNTRY_TEXT); return
+    need_w = int(it.get("workers") or 0)
+    if active_workers(u) < need_w:
+        edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\nکارگر کافی ندارید! نیاز: {fad(need_w)}✔️"); return
+    price = int(it.get("price") or 0)
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        hs = u.setdefault("houses", {})
+        hs[hid] = int(hs.get(hid, 0) or 0) + 1
+        u["satisfaction"] = int(u.get("satisfaction") or 0) + int(it.get("satisfaction") or 0)
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\n{it.get('btn', hid)} ساخته شد!✔️")
+    send_message(chat_id, "از منوی زیر استفاده کنید.", house_kb())
+
+
+def on_food_buy(uid, chat_id, mid, amount):
+    # amount packs
+    price_each = 5_000_000
+    food_each = 10
+    price = price_each * amount
+    u = get_user(uid)
+    if int(u.get("coins") or 0) < price:
+        edit_message(chat_id, mid, insufficient_msg(price, 0, u.get("coins"), 0)); return
+    with LOCK:
+        u["coins"] = int(u.get("coins") or 0) - price
+        u["food"] = int(u.get("food") or 0) + food_each * amount
+        save_data()
+    clear_pending(uid)
+    edit_message(chat_id, mid, f"*کاربر گرامی⚠️*\n\n{fad(food_each * amount)} غذا خریداری شد!✔️")
+    send_message(chat_id, "از منوی زیر استفاده کنید.", build_kb())
+
+
 
 # ───────────────────────────── اجرا ─────────────────────────────
 def poll_loop():
@@ -4062,6 +3814,7 @@ def poll_loop():
 def main():
     load_data()
     api("deleteWebhook")
+    verify_force_channels_admin()
     threading.Thread(target=profit_worker, daemon=True).start()
     poll_loop()
 
