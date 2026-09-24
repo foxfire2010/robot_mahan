@@ -462,9 +462,9 @@ WAR_CATS = [
         _w("🛥️ ۴۰ فروند River-class — ریور", 20, 10),
         _w("🛥️ ۴۰ فروند Kingston-class — کینگستون", 20, 10),
         _w("🛥️ ۴۰ فروند Nornen-class — نورنن", 20, 10),
-        _w("🛥️ ۴۰ فروند Stockholm-class — استکهلم", 20, 10),
+        _w("🛥️ ۴۰ فروند Stockholm-class — استکهوم", 20, 10),
     ]},
-    {"key": "speed", "btn": "🚤 قایق های تندرو", "phrase": "قایق تندرو مورد نظر خود را انتخاب نمایید", "items": [
+    {"key": "speed", "btn": "🚤 قایب های تندرو", "phrase": "قایق تندرو مورد نظر خود را انتخاب نمایید", "items": [
         _w("🚤 ۴۰ فروند MK V Special Ops — ام‌کی ۵ ویژه", 30, 20),
         _w("🚤 ۴۰ فروند CB90 — سی‌بی ۹۰", 30, 20),
         _w("🚤 ۴۰ فروند Skjold-class — اسکیولد", 30, 20),
@@ -1714,7 +1714,7 @@ def admin_panel_kb(uid=None):
     ]
     # فقط ادمین اصلی
     if uid is not None and int(uid) == int(ADMIN_ID):
-        rows.append(["📱 اطلاعات"])
+        rows.append(["📱 اطلاعات", "📥 آپلود بکاپ"])  # <--- این خط تغییر کرد
     rows.append(["🔙 بازگشت"])
     return RK(rows)
 
@@ -2704,29 +2704,41 @@ def on_message(msg):
     if text and check_spam(uid):
         return
 
-    # =================== بخش موقت آپلود بکاپ ===================
-    if is_admin(uid) and msg.get("document"):
-        file_name = msg["document"].get("file_name", "")
-        if file_name.endswith(".json"):
-            file_id = msg["document"]["file_id"]
-            # دریافت مسیر فایل از بله
-            res = api("getFile", file_id=file_id)
-            if res.get("ok"):
-                file_path = res["result"]["file_path"]
-                # دانلود فایل
-                download_url = f"https://tapi.bale.ai/file/bot{TOKEN}/{file_path}"
-                r = SESSION.get(download_url)
-                if r.status_code == 200:
-                    # ذخیره فایل در مسیر Volume
-                    with open(DATA_FILE, "wb") as f:
-                        f.write(r.content)
-                    send_message(chat_id, "✅ فایل بکاپ با موفقیت در سرور جایگزین شد!")
-                    # بارگذاری مجدد اطلاعات به حافظه
-                    load_data()
+    pend = get_pending(uid)
+
+    # --- بخش پردازش فایل آپلود شده توسط ادمین ---
+    if is_admin(uid) and pend and pend.get("step") == "upload_backup":
+        if msg.get("document"):
+            file_name = msg["document"].get("file_name", "")
+            if file_name.endswith(".json"):
+                file_id = msg["document"]["file_id"]
+                res = api("getFile", file_id=file_id)
+                if res.get("ok"):
+                    file_path = res["result"]["file_path"]
+                    download_url = f"https://tapi.bale.ai/file/bot{TOKEN}/{file_path}"
+                    r = SESSION.get(download_url)
+                    if r.status_code == 200:
+                        with open(DATA_FILE, "wb") as f:
+                            f.write(r.content)
+                        clear_pending(uid)
+                        send_message(chat_id, "✅ فایل بکاپ با موفقیت در سرور جایگزین شد و اطلاعات بارگذاری شد!")
+                        load_data()
+                        send_message(chat_id, "به پنل ادمین بازگشتید.", admin_panel_kb(uid))
+                    else:
+                        send_message(chat_id, "❌ خطا در دانلود فایل. لطفا دوباره تلاش کنید.")
                 else:
-                    send_message(chat_id, "❌ خطا در دانلود فایل.")
+                    send_message(chat_id, "❌ خطا در دریافت فایل از سرور بله.")
+            else:
+                send_message(chat_id, "❌ فایل ارسالی باید فرمت JSON داشته باشد!")
             return
-    # ==========================================================
+        elif text:
+            if text == "🔙 بازگشت":
+                clear_pending(uid)
+                send_message(chat_id, "به پنل ادمین بازگشتید.", admin_panel_kb(uid))
+            else:
+                send_message(chat_id, "*ادمین گرامی⚠️*\n\nلطفا فقط فایل JSON را ارسال کنید یا روی بازگشت بزنید!✔️")
+            return
+    # ----------------------------------------------
 
     if text.startswith("/start"):
         clear_pending(uid)
@@ -3482,6 +3494,12 @@ def on_message(msg):
             send_message(chat_id,
                 "*ادمین گرامی⚠️*\n\nدکمه مورد نظر را انتخاب نمایید!✔️\n\nاز منوی زیر استفاده کنید!📌",
                 custom_buttons_kb()); return
+        if text == "📥 آپلود بکاپ" and int(uid) == int(ADMIN_ID):
+            set_pending(uid, "upload_backup")
+            send_message(chat_id,
+                "*ادمین گرامی⚠️*\n\nلطفا فایل بکاپ (radar3_data.json) را برای بازگردانی اطلاعات ارسال کنید!✔️\n\n⚠️ توجه: اطلاعات فعلی جایگزین می‌شود!📌",
+                RK([["🔙 بازگشت"]]))
+            return
         if text == "📱 اطلاعات" and int(uid) == int(ADMIN_ID):
             try:
                 save_data()
